@@ -13,6 +13,15 @@
 #include <queue>
 #include <cstdio>
 
+struct Layer {
+    cairo_surface_t* surface = nullptr;
+    std::string name;
+    bool visible = true;
+    GtkWidget* visible_check = nullptr;
+    GtkWidget* name_entry = nullptr;
+    GtkWidget* select_button = nullptr;
+};
+
 const double line_thickness_options[] = {1.0, 2.0, 4.0, 6.0, 8.0};
 const double zoom_options[] = {1.0, 2.0, 4.0, 6.0, 8.0};
 // Tool types
@@ -65,6 +74,10 @@ bool is_transparent_color(const GdkRGBA& color);
 bool save_surface_to_file(cairo_surface_t* surface, const std::string& filename);
 void load_custom_palette_colors();
 void save_custom_palette_colors();
+void rebuild_layer_panel();
+void set_active_layer(int index);
+void add_new_layer();
+void delete_layer(int index);
 
 struct UndoSnapshot {
     cairo_surface_t* surface = nullptr;
@@ -78,6 +91,8 @@ struct AppState {
     GdkRGBA fg_color = {0.0, 0.5, 0.0, 1.0}; // Green
     GdkRGBA bg_color = {1.0, 1.0, 1.0, 1.0}; // White
     cairo_surface_t* surface = nullptr;
+    std::vector<Layer> layers;
+    int active_layer_index = 0;
     int canvas_width = 800;
     int canvas_height = 600;
     double last_x = 0;
@@ -168,6 +183,14 @@ struct AppState {
     std::vector<GdkRGBA> palette_button_colors;
     std::vector<bool> custom_palette_slots;
     std::vector<GtkWidget*> palette_buttons;
+    GtkWidget* layer_list_box = nullptr;
+    GtkWidget* layer_panel = nullptr;
+    GtkWidget* add_layer_button = nullptr;
+
+    bool show_vertical_center_guide = false;
+    bool show_horizontal_center_guide = false;
+    std::vector<double> vertical_guides;
+    std::vector<double> horizontal_guides;
 
     std::string current_filename;
 
@@ -1077,6 +1100,7 @@ void resize_canvas_for_paste(int new_width, int new_height) {
     cairo_destroy(cr);
 
     app_state.surface = resized_surface;
+    if (!app_state.layers.empty()) app_state.layers[app_state.active_layer_index].surface = app_state.surface;
     app_state.canvas_width = new_width;
     app_state.canvas_height = new_height;
     cairo_surface_destroy(old_surface);
@@ -1273,6 +1297,144 @@ void update_color_indicators() {
     }
 }
 
+
+cairo_surface_t* create_blank_surface(int width, int height, bool fill_white) {
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+    cairo_t* cr = cairo_create(surface);
+    configure_crisp_rendering(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+    if (fill_white) {
+        cairo_set_source_rgba(cr, 1, 1, 1, 1);
+    } else {
+        cairo_set_source_rgba(cr, 0, 0, 0, 0);
+    }
+    cairo_paint(cr);
+    cairo_destroy(cr);
+    return surface;
+}
+
+void set_active_layer(int index) {
+    if (index < 0 || index >= (int)app_state.layers.size()) {
+        return;
+    }
+    app_state.active_layer_index = index;
+    app_state.surface = app_state.layers[index].surface;
+    rebuild_layer_panel();
+}
+
+void clear_layers() {
+    for (Layer& layer : app_state.layers) {
+        if (layer.surface) {
+            cairo_surface_destroy(layer.surface);
+            layer.surface = nullptr;
+        }
+    }
+    app_state.layers.clear();
+    app_state.active_layer_index = 0;
+    app_state.surface = nullptr;
+}
+
+void ensure_default_layers() {
+    clear_layers();
+    Layer layer;
+    layer.name = "Layer 1";
+    layer.visible = true;
+    layer.surface = create_blank_surface(app_state.canvas_width, app_state.canvas_height, true);
+    app_state.layers.push_back(layer);
+    set_active_layer(0);
+}
+
+void add_new_layer() {
+    Layer layer;
+    layer.name = "Layer " + std::to_string(app_state.layers.size() + 1);
+    layer.visible = true;
+    layer.surface = create_blank_surface(app_state.canvas_width, app_state.canvas_height, false);
+    app_state.layers.push_back(layer);
+    set_active_layer((int)app_state.layers.size() - 1);
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+void delete_layer(int index) {
+    if (index < 0 || index >= (int)app_state.layers.size()) {
+        return;
+    }
+    if (app_state.layers.size() <= 1) {
+        return;
+    }
+
+    if (app_state.layers[index].surface) {
+        cairo_surface_destroy(app_state.layers[index].surface);
+        app_state.layers[index].surface = nullptr;
+    }
+
+    app_state.layers.erase(app_state.layers.begin() + index);
+    if (app_state.active_layer_index >= (int)app_state.layers.size()) {
+        app_state.active_layer_index = (int)app_state.layers.size() - 1;
+    } else if (app_state.active_layer_index > index) {
+        app_state.active_layer_index--;
+    } else if (app_state.active_layer_index == index) {
+        app_state.active_layer_index = std::max(0, index - 1);
+    }
+
+    set_active_layer(app_state.active_layer_index);
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+void rebuild_layer_panel() {
+    if (!app_state.layer_list_box) return;
+
+    GList* children = gtk_container_get_children(GTK_CONTAINER(app_state.layer_list_box));
+    for (GList* l = children; l != NULL; l = l->next) {
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    }
+    g_list_free(children);
+
+    GSList* group = NULL;
+    for (int i = (int)app_state.layers.size() - 1; i >= 0; --i) {
+        Layer& layer = app_state.layers[i];
+        GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        layer.visible_check = gtk_check_button_new();
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(layer.visible_check), layer.visible);
+        g_signal_connect(layer.visible_check, "toggled", G_CALLBACK(+[](GtkToggleButton* btn, gpointer data) {
+            int idx = GPOINTER_TO_INT(data);
+            app_state.layers[idx].visible = gtk_toggle_button_get_active(btn);
+            if (app_state.drawing_area) gtk_widget_queue_draw(app_state.drawing_area);
+        }), GINT_TO_POINTER(i));
+
+        layer.select_button = gtk_radio_button_new(group);
+        group = gtk_radio_button_get_group(GTK_RADIO_BUTTON(layer.select_button));
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(layer.select_button), i == app_state.active_layer_index);
+        g_signal_connect(layer.select_button, "toggled", G_CALLBACK(+[](GtkToggleButton* btn, gpointer data) {
+            if (!gtk_toggle_button_get_active(btn)) return;
+            set_active_layer(GPOINTER_TO_INT(data));
+        }), GINT_TO_POINTER(i));
+
+        layer.name_entry = gtk_entry_new();
+        gtk_entry_set_text(GTK_ENTRY(layer.name_entry), layer.name.c_str());
+        g_signal_connect(layer.name_entry, "changed", G_CALLBACK(+[](GtkEditable* editable, gpointer data) {
+            int idx = GPOINTER_TO_INT(data);
+            app_state.layers[idx].name = gtk_entry_get_text(GTK_ENTRY(editable));
+        }), GINT_TO_POINTER(i));
+
+        GtkWidget* delete_button = gtk_button_new_with_label("-");
+        gtk_widget_set_sensitive(delete_button, app_state.layers.size() > 1);
+        g_signal_connect(delete_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+            delete_layer(GPOINTER_TO_INT(data));
+        }), GINT_TO_POINTER(i));
+
+        gtk_box_pack_start(GTK_BOX(row), layer.visible_check, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(row), layer.select_button, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(row), layer.name_entry, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(row), delete_button, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(app_state.layer_list_box), row, FALSE, FALSE, 0);
+    }
+    gtk_widget_show_all(app_state.layer_list_box);
+}
+
 cairo_surface_t* clone_surface(cairo_surface_t* source, int width, int height) {
     if (!source || width <= 0 || height <= 0) {
         return nullptr;
@@ -1320,6 +1482,7 @@ void undo_last_operation() {
     }
 
     app_state.surface = snapshot.surface;
+    if (!app_state.layers.empty()) app_state.layers[app_state.active_layer_index].surface = app_state.surface;
     app_state.canvas_width = snapshot.width;
     app_state.canvas_height = snapshot.height;
 
@@ -1341,21 +1504,7 @@ void undo_last_operation() {
 
 // Initialize drawing surface
 void init_surface(GtkWidget* widget) {
-    if (app_state.surface) {
-        cairo_surface_destroy(app_state.surface);
-    }
-    
-    app_state.surface = cairo_image_surface_create(
-        CAIRO_FORMAT_ARGB32, 
-        app_state.canvas_width, 
-        app_state.canvas_height
-    );
-    
-    cairo_t* cr = cairo_create(app_state.surface);
-    configure_crisp_rendering(cr);
-    cairo_set_source_rgb(cr, 1, 1, 1);
-    cairo_paint(cr);
-    cairo_destroy(cr);
+    ensure_default_layers();
 }
 
 // Get active color based on mouse button
@@ -1931,43 +2080,116 @@ void draw_preview(cairo_t* cr) {
     cairo_restore(cr);
 }
 
+
+
+bool is_close_to_guide_blue(guint8 r, guint8 g, guint8 b) {
+    const int target_r = 0;
+    const int target_g = 0;
+    const int target_b = 255;
+    return std::abs((int)r - target_r) <= 10 && std::abs((int)g - target_g) <= 10 && std::abs((int)b - target_b) <= 10;
+}
+
+void get_visible_composited_rgb(int x, int y, guint8& out_r, guint8& out_g, guint8& out_b) {
+    double r = 1.0, g = 1.0, b = 1.0, a = 1.0;
+    for (int i = 0; i < (int)app_state.layers.size(); ++i) {
+        const Layer& layer = app_state.layers[i];
+        if (!layer.visible || !layer.surface) continue;
+        int lw = cairo_image_surface_get_width(layer.surface);
+        int lh = cairo_image_surface_get_height(layer.surface);
+        if (x < 0 || y < 0 || x >= lw || y >= lh) continue;
+        cairo_surface_flush(layer.surface);
+        unsigned char* data = cairo_image_surface_get_data(layer.surface);
+        int stride = cairo_image_surface_get_stride(layer.surface);
+        guint32 pixel = *reinterpret_cast<guint32*>(data + y * stride + x * 4);
+        double sa = ((pixel >> 24) & 0xFF) / 255.0;
+        double sr = ((pixel >> 16) & 0xFF) / 255.0;
+        double sg = ((pixel >> 8) & 0xFF) / 255.0;
+        double sb = (pixel & 0xFF) / 255.0;
+        r = sr * sa + r * (1.0 - sa);
+        g = sg * sa + g * (1.0 - sa);
+        b = sb * sa + b * (1.0 - sa);
+    }
+    out_r = (guint8)std::round(std::max(0.0, std::min(1.0, r)) * 255.0);
+    out_g = (guint8)std::round(std::max(0.0, std::min(1.0, g)) * 255.0);
+    out_b = (guint8)std::round(std::max(0.0, std::min(1.0, b)) * 255.0);
+}
+
+void draw_vertical_guide(cairo_t* cr, double x) {
+    int xi = (int)std::round(x);
+    if (xi < 0 || xi >= app_state.canvas_width) return;
+    for (int y = 0; y < app_state.canvas_height; ++y) {
+        guint8 r, g, b;
+        get_visible_composited_rgb(xi, y, r, g, b);
+        if (is_close_to_guide_blue(r, g, b)) {
+            cairo_set_source_rgb(cr, 1.0, 0.0, 1.0);
+        } else {
+            cairo_set_source_rgb(cr, 0.0, 0.0, 1.0);
+        }
+        cairo_rectangle(cr, xi, y, 1, 1);
+        cairo_fill(cr);
+    }
+}
+
+void draw_horizontal_guide(cairo_t* cr, double y) {
+    int yi = (int)std::round(y);
+    if (yi < 0 || yi >= app_state.canvas_height) return;
+    for (int x = 0; x < app_state.canvas_width; ++x) {
+        guint8 r, g, b;
+        get_visible_composited_rgb(x, yi, r, g, b);
+        if (is_close_to_guide_blue(r, g, b)) {
+            cairo_set_source_rgb(cr, 1.0, 0.0, 1.0);
+        } else {
+            cairo_set_source_rgb(cr, 0.0, 0.0, 1.0);
+        }
+        cairo_rectangle(cr, x, yi, 1, 1);
+        cairo_fill(cr);
+    }
+}
 // Canvas draw callback
 gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer data) {
-    if (app_state.surface) {
-        update_canvas_dimensions_label();
-        configure_crisp_rendering(cr);
-        cairo_save(cr);
-        cairo_scale(cr, app_state.zoom_factor, app_state.zoom_factor);
-        cairo_set_source_surface(cr, app_state.surface, 0, 0);
+    if (app_state.layers.empty()) {
+        return FALSE;
+    }
+
+    configure_crisp_rendering(cr);
+    cairo_save(cr);
+    cairo_scale(cr, app_state.zoom_factor, app_state.zoom_factor);
+
+    for (const Layer& layer : app_state.layers) {
+        if (!layer.visible || !layer.surface) continue;
+        cairo_set_source_surface(cr, layer.surface, 0, 0);
         cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_NEAREST);
         cairo_paint(cr);
-
-        if (app_state.floating_selection_active && app_state.floating_surface) {
-		    double x = std::round(fmin(app_state.selection_x1, app_state.selection_x2));
-		    double y = std::round(fmin(app_state.selection_y1, app_state.selection_y2));
-
-            cairo_set_source_surface(cr, app_state.floating_surface, x, y);
-            cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_NEAREST);
-            cairo_paint(cr);
-        }
-        
-        // Draw active selection
-        if (app_state.has_selection) {
-            draw_selection_overlay(cr);
-        }
-        
-        // Draw text overlay
-        if (app_state.text_active) {
-            draw_text_overlay(cr);
-        }
-        
-        // Draw preview if needed
-        if (tool_needs_preview(app_state.current_tool)) {
-            draw_preview(cr);
-        }
-        draw_hover_indicator(cr);
-        cairo_restore(cr);
     }
+
+    if (app_state.floating_selection_active && app_state.floating_surface) {
+        double x = std::round(fmin(app_state.selection_x1, app_state.selection_x2));
+        double y = std::round(fmin(app_state.selection_y1, app_state.selection_y2));
+        cairo_set_source_surface(cr, app_state.floating_surface, x, y);
+        cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_NEAREST);
+        cairo_paint(cr);
+    }
+
+    if (app_state.show_vertical_center_guide) {
+        draw_vertical_guide(cr, app_state.canvas_width / 2.0);
+    }
+    if (app_state.show_horizontal_center_guide) {
+        draw_horizontal_guide(cr, app_state.canvas_height / 2.0);
+    }
+    for (double x : app_state.vertical_guides) draw_vertical_guide(cr, x);
+    for (double y : app_state.horizontal_guides) draw_horizontal_guide(cr, y);
+
+    if (app_state.has_selection) {
+        draw_selection_overlay(cr);
+    }
+    if (app_state.text_active) {
+        draw_text_overlay(cr);
+    }
+    if (tool_needs_preview(app_state.current_tool)) {
+        draw_preview(cr);
+    }
+    draw_hover_indicator(cr);
+    cairo_restore(cr);
     return FALSE;
 }
 
@@ -2506,6 +2728,80 @@ gboolean on_button_release(GtkWidget* widget, GdkEventButton* event, gpointer da
     return TRUE;
 }
 
+
+
+void on_view_vertical_center_toggled(GtkCheckMenuItem* item, gpointer data) {
+    app_state.show_vertical_center_guide = gtk_check_menu_item_get_active(item);
+    if (app_state.drawing_area) gtk_widget_queue_draw(app_state.drawing_area);
+}
+
+void on_view_horizontal_center_toggled(GtkCheckMenuItem* item, gpointer data) {
+    app_state.show_horizontal_center_guide = gtk_check_menu_item_get_active(item);
+    if (app_state.drawing_area) gtk_widget_queue_draw(app_state.drawing_area);
+}
+
+void prompt_guides(bool vertical) {
+    GtkWidget* dialog = gtk_dialog_new_with_buttons(
+        vertical ? _("Vertical Guides") : _("Horizontal Guides"),
+        GTK_WINDOW(app_state.window),
+        GTK_DIALOG_MODAL,
+        _("_Cancel"), GTK_RESPONSE_CANCEL,
+        _("_OK"), GTK_RESPONSE_OK,
+        NULL
+    );
+
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget* grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
+    GtkWidget* count_label = gtk_label_new(_("Number of lines:"));
+    GtkWidget* spacing_label = gtk_label_new(_("Spacing (pixels):"));
+    GtkWidget* count_spin = gtk_spin_button_new_with_range(1, 100, 1);
+    GtkWidget* spacing_spin = gtk_spin_button_new_with_range(1, 1000, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(count_spin), 3);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spacing_spin), 50);
+    gtk_grid_attach(GTK_GRID(grid), count_label, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), count_spin, 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), spacing_label, 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), spacing_spin, 1, 1, 1, 1);
+    gtk_box_pack_start(GTK_BOX(content), grid, TRUE, TRUE, 0);
+    gtk_widget_show_all(dialog);
+
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
+        int count = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(count_spin));
+        int spacing = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spacing_spin));
+        std::vector<double>& guides = vertical ? app_state.vertical_guides : app_state.horizontal_guides;
+        guides.clear();
+        for (int i = 0; i < count; ++i) {
+            guides.push_back((i + 1) * spacing);
+        }
+        if (app_state.drawing_area) gtk_widget_queue_draw(app_state.drawing_area);
+    }
+    gtk_widget_destroy(dialog);
+}
+
+void on_view_vertical_guides_activate(GtkMenuItem* item, gpointer data) {
+    prompt_guides(true);
+}
+
+void on_view_horizontal_guides_activate(GtkMenuItem* item, gpointer data) {
+    prompt_guides(false);
+}
+
+
+cairo_surface_t* compose_visible_layers_surface() {
+    cairo_surface_t* composed = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, app_state.canvas_width, app_state.canvas_height);
+    cairo_t* cr = cairo_create(composed);
+    cairo_set_source_rgb(cr, 1, 1, 1);
+    cairo_paint(cr);
+    for (const Layer& layer : app_state.layers) {
+        if (!layer.visible || !layer.surface) continue;
+        cairo_set_source_surface(cr, layer.surface, 0, 0);
+        cairo_paint(cr);
+    }
+    cairo_destroy(cr);
+    return composed;
+}
 // File operations
 void save_image_dialog(GtkWidget* parent) {
     if (app_state.floating_selection_active) {
@@ -2559,7 +2855,9 @@ void save_image_dialog(GtkWidget* parent) {
             }
 
             app_state.current_filename = fname;
-            cairo_surface_write_to_png(app_state.surface, fname.c_str());
+            cairo_surface_t* composed = compose_visible_layers_surface();
+            cairo_surface_write_to_png(composed, fname.c_str());
+            cairo_surface_destroy(composed);
 
             g_free(filename);
         }
@@ -2654,11 +2952,14 @@ void open_image_dialog(GtkWidget* parent) {
                 app_state.canvas_width = width;
                 app_state.canvas_height = height;
 
-                if (app_state.surface) {
-                    cairo_surface_destroy(app_state.surface);
-                }
-
-                app_state.surface = loaded_surface;
+                clear_layers();
+                Layer layer;
+                layer.name = "Layer 1";
+                layer.visible = true;
+                layer.surface = loaded_surface;
+                app_state.layers.push_back(layer);
+                set_active_layer(0);
+                rebuild_layer_panel();
 
                 gtk_widget_set_size_request(app_state.drawing_area,
                     static_cast<int>(width * app_state.zoom_factor),
@@ -2781,6 +3082,7 @@ void on_file_new(GtkMenuItem* item, gpointer data) {
     app_state.canvas_height = new_height;
     gtk_widget_set_size_request(app_state.drawing_area, new_width, new_height);
     init_surface(app_state.drawing_area);
+    rebuild_layer_panel();
     app_state.current_filename.clear();
     clear_selection();
     if (app_state.text_active) {
@@ -2803,7 +3105,9 @@ void on_file_save(GtkMenuItem* item, gpointer data) {
             filename += ".png";
             app_state.current_filename = filename;
         }
-        save_surface_to_file(app_state.surface, app_state.current_filename);
+        cairo_surface_t* composed = compose_visible_layers_surface();
+        save_surface_to_file(composed, app_state.current_filename);
+        cairo_surface_destroy(composed);
     } else {
         save_image_dialog(app_state.window);
     }
@@ -2885,6 +3189,7 @@ void on_image_scale(GtkMenuItem* item, gpointer data) {
     cairo_destroy(cr);
 
     app_state.surface = scaled_surface;
+    if (!app_state.layers.empty()) app_state.layers[app_state.active_layer_index].surface = app_state.surface;
     app_state.canvas_width = new_width;
     app_state.canvas_height = new_height;
     cairo_surface_destroy(old_surface);
@@ -2964,6 +3269,7 @@ void on_image_resize_canvas(GtkMenuItem* item, gpointer data) {
     cairo_destroy(cr);
 
     app_state.surface = resized_surface;
+    if (!app_state.layers.empty()) app_state.layers[app_state.active_layer_index].surface = app_state.surface;
     app_state.canvas_width = new_width;
     app_state.canvas_height = new_height;
     cairo_surface_destroy(old_surface);
@@ -3038,6 +3344,7 @@ void on_image_rotate_clockwise(GtkMenuItem* item, gpointer data) {
     cairo_destroy(cr);
 
     app_state.surface = rotated_surface;
+    if (!app_state.layers.empty()) app_state.layers[app_state.active_layer_index].surface = app_state.surface;
     app_state.canvas_width = new_width;
     app_state.canvas_height = new_height;
     cairo_surface_destroy(old_surface);
@@ -3112,6 +3419,7 @@ void on_image_rotate_counter_clockwise(GtkMenuItem* item, gpointer data) {
     cairo_destroy(cr);
 
     app_state.surface = rotated_surface;
+    if (!app_state.layers.empty()) app_state.layers[app_state.active_layer_index].surface = app_state.surface;
     app_state.canvas_width = new_width;
     app_state.canvas_height = new_height;
     cairo_surface_destroy(old_surface);
@@ -3178,6 +3486,7 @@ void on_image_flip_horizontal(GtkMenuItem* item, gpointer data) {
     cairo_destroy(cr);
 
     app_state.surface = flipped_surface;
+    if (!app_state.layers.empty()) app_state.layers[app_state.active_layer_index].surface = app_state.surface;
     cairo_surface_destroy(old_surface);
 
     clear_selection();
@@ -3241,6 +3550,7 @@ void on_image_flip_vertical(GtkMenuItem* item, gpointer data) {
     cairo_destroy(cr);
 
     app_state.surface = flipped_surface;
+    if (!app_state.layers.empty()) app_state.layers[app_state.active_layer_index].surface = app_state.surface;
     cairo_surface_destroy(old_surface);
 
     clear_selection();
@@ -3751,6 +4061,25 @@ int main(int argc, char* argv[]) {
     gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), edit_paste);
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(edit_menu_item), edit_menu);
 
+    GtkWidget* view_menu = gtk_menu_new();
+    GtkWidget* view_menu_item = gtk_menu_item_new_with_label(_("View"));
+    GtkWidget* view_vertical_center = gtk_check_menu_item_new_with_label(_("View Vertical Center Guide"));
+    GtkWidget* view_horizontal_center = gtk_check_menu_item_new_with_label(_("View Horizontal Center Guide"));
+    GtkWidget* view_vertical_guides = gtk_menu_item_new_with_label(_("View Vertical Guides..."));
+    GtkWidget* view_horizontal_guides = gtk_menu_item_new_with_label(_("View Horizontal Guides..."));
+
+    g_signal_connect(view_vertical_center, "toggled", G_CALLBACK(on_view_vertical_center_toggled), NULL);
+    g_signal_connect(view_horizontal_center, "toggled", G_CALLBACK(on_view_horizontal_center_toggled), NULL);
+    g_signal_connect(view_vertical_guides, "activate", G_CALLBACK(on_view_vertical_guides_activate), NULL);
+    g_signal_connect(view_horizontal_guides, "activate", G_CALLBACK(on_view_horizontal_guides_activate), NULL);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), view_vertical_center);
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), view_horizontal_center);
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), gtk_separator_menu_item_new());
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), view_vertical_guides);
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), view_horizontal_guides);
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(view_menu_item), view_menu);
+
     GtkWidget* image_menu = gtk_menu_new();
     GtkWidget* image_menu_item = gtk_menu_item_new_with_label(_("Image"));
     GtkWidget* image_scale = gtk_menu_item_new_with_label(_("Scale Image..."));
@@ -3789,6 +4118,7 @@ int main(int argc, char* argv[]) {
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(help_menu_item), help_menu);
     
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), edit_menu_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), view_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), image_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), help_menu_item);
     
@@ -3933,7 +4263,7 @@ int main(int argc, char* argv[]) {
     g_signal_connect(app_state.drawing_area, "leave-notify-event", G_CALLBACK(on_leave_notify), NULL);
     g_signal_connect(app_state.drawing_area, "button-release-event", G_CALLBACK(on_button_release), NULL);
     
-    gtk_widget_set_events(app_state.drawing_area, 
+	    gtk_widget_set_events(app_state.drawing_area, 
         GDK_BUTTON_PRESS_MASK | 
         GDK_BUTTON_RELEASE_MASK | 
         GDK_POINTER_MOTION_MASK |
@@ -3942,6 +4272,21 @@ int main(int argc, char* argv[]) {
     
     gtk_container_add(GTK_CONTAINER(scrolled), app_state.drawing_area);
     gtk_box_pack_start(GTK_BOX(content_box), scrolled, TRUE, TRUE, 0);
+
+    app_state.layer_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_margin_start(app_state.layer_panel, 6);
+    gtk_widget_set_margin_end(app_state.layer_panel, 6);
+    gtk_widget_set_margin_top(app_state.layer_panel, 6);
+    GtkWidget* layers_label = gtk_label_new(_("Layers"));
+    gtk_box_pack_start(GTK_BOX(app_state.layer_panel), layers_label, FALSE, FALSE, 0);
+    app_state.layer_list_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_box_pack_start(GTK_BOX(app_state.layer_panel), app_state.layer_list_box, FALSE, FALSE, 0);
+    app_state.add_layer_button = gtk_button_new_with_label(_("+ Add a Layer"));
+    g_signal_connect(app_state.add_layer_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+        add_new_layer();
+    }), NULL);
+    gtk_box_pack_start(GTK_BOX(app_state.layer_panel), app_state.add_layer_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(content_box), app_state.layer_panel, FALSE, FALSE, 0);
     
     GtkWidget* bottom_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     gtk_widget_set_margin_start(bottom_box, 5);
@@ -4017,7 +4362,8 @@ int main(int argc, char* argv[]) {
     gtk_box_pack_end(GTK_BOX(main_box), bottom_box, FALSE, FALSE, 0);
     
     init_surface(app_state.drawing_area);
-    
+    rebuild_layer_panel();
+
     start_ant_animation();
     
     gtk_widget_show_all(app_state.window);
@@ -4026,9 +4372,7 @@ int main(int argc, char* argv[]) {
     gtk_main();
     
     stop_ant_animation();
-    if (app_state.surface) {
-        cairo_surface_destroy(app_state.surface);
-    }
+    clear_layers();
     if (app_state.clipboard_surface) {
         cairo_surface_destroy(app_state.clipboard_surface);
     }
