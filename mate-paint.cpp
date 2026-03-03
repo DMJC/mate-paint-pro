@@ -32,6 +32,7 @@ enum Tool {
     TOOL_RECTANGLE,
     TOOL_POLYGON,
     TOOL_ELLIPSE,
+    TOOL_REGULAR_POLYGON,
     TOOL_ROUNDED_RECT,
     TOOL_COUNT
 };
@@ -65,6 +66,9 @@ bool is_transparent_color(const GdkRGBA& color);
 bool save_surface_to_file(cairo_surface_t* surface, const std::string& filename);
 void load_custom_palette_colors();
 void save_custom_palette_colors();
+bool ask_regular_polygon_sides(GtkWidget* parent);
+void build_regular_polygon_points(double start_x, double start_y, double end_x, double end_y, bool from_center, bool uniform, int sides, std::vector<std::pair<double, double>>& points);
+void draw_regular_polygon(cairo_t* cr, const std::vector<std::pair<double, double>>& points);
 
 struct UndoSnapshot {
     cairo_surface_t* surface = nullptr;
@@ -85,6 +89,7 @@ struct AppState {
     bool is_drawing = false;
     bool is_right_button = false;
     bool shift_pressed = false;
+    bool ctrl_pressed = false;
     double line_width = 2.0;
     
     // For shape tools and preview
@@ -100,6 +105,7 @@ struct AppState {
     std::vector<std::pair<double, double>> lasso_points;
     bool lasso_polygon_mode = false;
     bool ellipse_center_mode = false;
+    int regular_polygon_sides = 5;
     
     // Curve tool state
     bool curve_active = false;
@@ -304,7 +310,7 @@ bool tool_needs_preview(Tool tool) {
     return tool == TOOL_LASSO_SELECT || tool == TOOL_RECT_SELECT ||
            tool == TOOL_LINE || tool == TOOL_CURVE ||
            tool == TOOL_RECTANGLE || tool == TOOL_POLYGON ||
-           tool == TOOL_ELLIPSE || tool == TOOL_ROUNDED_RECT;
+           tool == TOOL_ELLIPSE || tool == TOOL_REGULAR_POLYGON || tool == TOOL_ROUNDED_RECT;
 }
 
 int tool_to_index(Tool tool) {
@@ -314,7 +320,7 @@ int tool_to_index(Tool tool) {
 bool tool_supports_line_thickness(Tool tool) {
     return tool == TOOL_PAINTBRUSH || tool == TOOL_AIRBRUSH || tool == TOOL_ERASER ||
            tool == TOOL_LINE || tool == TOOL_CURVE || tool == TOOL_RECTANGLE ||
-           tool == TOOL_POLYGON || tool == TOOL_ELLIPSE || tool == TOOL_ROUNDED_RECT;
+           tool == TOOL_POLYGON || tool == TOOL_ELLIPSE || tool == TOOL_REGULAR_POLYGON || tool == TOOL_ROUNDED_RECT;
 }
 
 bool tool_shows_brush_hover_outline(Tool tool) {
@@ -1119,6 +1125,53 @@ void constrain_to_square(double start_x, double start_y, double& end_x, double& 
     end_y = start_y + (dy >= 0 ? size : -size);
 }
 
+
+void build_regular_polygon_points(double start_x, double start_y, double end_x, double end_y, bool from_center, bool uniform, int sides, std::vector<std::pair<double, double>>& points) {
+    points.clear();
+
+    if (sides < 3) {
+        return;
+    }
+
+    double center_x = 0.0;
+    double center_y = 0.0;
+    double radius_x = 0.0;
+    double radius_y = 0.0;
+
+    if (from_center) {
+        center_x = start_x;
+        center_y = start_y;
+        radius_x = fabs(end_x - start_x);
+        radius_y = fabs(end_y - start_y);
+    } else {
+        center_x = (start_x + end_x) / 2.0;
+        center_y = (start_y + end_y) / 2.0;
+        radius_x = fabs(end_x - start_x) / 2.0;
+        radius_y = fabs(end_y - start_y) / 2.0;
+    }
+
+    if (uniform) {
+        double radius = fmax(radius_x, radius_y);
+        radius_x = radius;
+        radius_y = radius;
+    }
+
+    if (radius_x < 0.1 || radius_y < 0.1) {
+        return;
+    }
+
+    const double start_angle = -M_PI / 2.0;
+    const double step = (2.0 * M_PI) / static_cast<double>(sides);
+
+    for (int i = 0; i < sides; ++i) {
+        double angle = start_angle + step * static_cast<double>(i);
+        points.push_back({
+            center_x + cos(angle) * radius_x,
+            center_y + sin(angle) * radius_y
+        });
+    }
+}
+
 // Ant path timer callback
 gboolean ant_path_timer(gpointer data) {
     app_state.ant_offset += 1.0;
@@ -1547,6 +1600,10 @@ void draw_polygon(cairo_t* cr, const std::vector<std::pair<double, double>>& poi
     cairo_stroke(cr);
 }
 
+void draw_regular_polygon(cairo_t* cr, const std::vector<std::pair<double, double>>& points) {
+    draw_polygon(cr, points);
+}
+
 void draw_curve(cairo_t* cr, double start_x, double start_y, double control_x, double control_y, double end_x, double end_y) {
     GdkRGBA color = get_active_color();
     cairo_set_source_rgba(cr, color.red, color.green, color.blue, color.alpha);
@@ -1884,6 +1941,31 @@ void draw_preview(cairo_t* cr) {
             }
             break;
         }
+
+        case TOOL_REGULAR_POLYGON: {
+            std::vector<std::pair<double, double>> points;
+            build_regular_polygon_points(
+                app_state.start_x,
+                app_state.start_y,
+                preview_x,
+                preview_y,
+                app_state.ctrl_pressed,
+                app_state.shift_pressed,
+                app_state.regular_polygon_sides,
+                points
+            );
+
+            if (points.size() >= 3) {
+                draw_ant_path(cr);
+                cairo_move_to(cr, points[0].first, points[0].second);
+                for (size_t i = 1; i < points.size(); ++i) {
+                    cairo_line_to(cr, points[i].first, points[i].second);
+                }
+                cairo_close_path(cr);
+                cairo_stroke(cr);
+            }
+            break;
+        }
         
         case TOOL_ROUNDED_RECT: {
             double x = fmin(app_state.start_x, preview_x);
@@ -1978,6 +2060,11 @@ gboolean on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer data) {
         if (app_state.is_drawing && app_state.drawing_area) {
             gtk_widget_queue_draw(app_state.drawing_area);
         }
+    } else if (event->keyval == GDK_KEY_Control_L || event->keyval == GDK_KEY_Control_R) {
+        app_state.ctrl_pressed = true;
+        if (app_state.is_drawing && app_state.drawing_area) {
+            gtk_widget_queue_draw(app_state.drawing_area);
+        }
     } else if ((event->state & GDK_CONTROL_MASK) && event->keyval == GDK_KEY_c) {
         copy_selection();
     } else if ((event->state & GDK_CONTROL_MASK) && event->keyval == GDK_KEY_x) {
@@ -1994,6 +2081,11 @@ gboolean on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer data) {
 gboolean on_key_release(GtkWidget* widget, GdkEventKey* event, gpointer data) {
     if (event->keyval == GDK_KEY_Shift_L || event->keyval == GDK_KEY_Shift_R) {
         app_state.shift_pressed = false;
+        if (app_state.is_drawing && app_state.drawing_area) {
+            gtk_widget_queue_draw(app_state.drawing_area);
+        }
+    } else if (event->keyval == GDK_KEY_Control_L || event->keyval == GDK_KEY_Control_R) {
+        app_state.ctrl_pressed = false;
         if (app_state.is_drawing && app_state.drawing_area) {
             gtk_widget_queue_draw(app_state.drawing_area);
         }
@@ -2308,7 +2400,7 @@ gboolean on_button_press(GtkWidget* widget, GdkEventButton* event, gpointer data
             app_state.current_tool == TOOL_AIRBRUSH || app_state.current_tool == TOOL_ERASER ||
             app_state.current_tool == TOOL_LINE || app_state.current_tool == TOOL_CURVE ||
 			app_state.current_tool == TOOL_RECTANGLE || app_state.current_tool == TOOL_ELLIPSE ||
-            app_state.current_tool == TOOL_ROUNDED_RECT) {
+            app_state.current_tool == TOOL_REGULAR_POLYGON || app_state.current_tool == TOOL_ROUNDED_RECT) {
             push_undo_state();
         }
         app_state.last_x = canvas_x;
@@ -2317,6 +2409,9 @@ gboolean on_button_press(GtkWidget* widget, GdkEventButton* event, gpointer data
         app_state.start_y = canvas_y;
         app_state.current_x = canvas_x;
         app_state.current_y = canvas_y;
+        if (app_state.current_tool == TOOL_REGULAR_POLYGON) {
+            app_state.ctrl_pressed = ((event->state & GDK_CONTROL_MASK) != 0);
+        }
         
         if (app_state.current_tool == TOOL_AIRBRUSH) {
             cairo_t* cr = cairo_create(app_state.surface);
@@ -2353,6 +2448,10 @@ gboolean on_motion_notify(GtkWidget* widget, GdkEventMotion* event, gpointer dat
 
         app_state.current_x = canvas_x;
         app_state.current_y = canvas_y;
+
+        if (app_state.current_tool == TOOL_REGULAR_POLYGON) {
+            app_state.ctrl_pressed = ((event->state & GDK_CONTROL_MASK) != 0);
+        }
 
         if (app_state.dragging_selection && app_state.has_selection) {
             double old_x = fmin(app_state.selection_x1, app_state.selection_x2);
@@ -2477,6 +2576,22 @@ gboolean on_button_release(GtkWidget* widget, GdkEventButton* event, gpointer da
                 draw_ellipse(cr, app_state.start_x, app_state.start_y, end_x, end_y, false);
                 stop_ant_animation();
                 break;
+            case TOOL_REGULAR_POLYGON: {
+                std::vector<std::pair<double, double>> points;
+                build_regular_polygon_points(
+                    app_state.start_x,
+                    app_state.start_y,
+                    end_x,
+                    end_y,
+                    ((event->state & GDK_CONTROL_MASK) != 0) || app_state.ctrl_pressed,
+                    app_state.shift_pressed,
+                    app_state.regular_polygon_sides,
+                    points
+                );
+                draw_regular_polygon(cr, points);
+                stop_ant_animation();
+                break;
+            }
             case TOOL_ROUNDED_RECT:
                 draw_rounded_rectangle(cr, app_state.start_x, app_state.start_y, end_x, end_y, false);
                 stop_ant_animation();
@@ -3272,9 +3387,41 @@ void on_help_about(GtkMenuItem* item, gpointer data) {
     gtk_widget_destroy(dialog);
 }
 
+bool ask_regular_polygon_sides(GtkWidget* parent) {
+    GtkWidget* dialog = gtk_dialog_new_with_buttons(
+        _("Polygon Button"),
+        GTK_WINDOW(parent),
+        static_cast<GtkDialogFlags>(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
+        _("_Cancel"), GTK_RESPONSE_CANCEL,
+        _("_OK"), GTK_RESPONSE_OK,
+        NULL
+    );
+
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget* label = gtk_label_new(_("Choose number of sides (3-50):"));
+    GtkWidget* spin = gtk_spin_button_new_with_range(3, 50, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin), app_state.regular_polygon_sides);
+
+    gtk_box_pack_start(GTK_BOX(content), label, FALSE, FALSE, 6);
+    gtk_box_pack_start(GTK_BOX(content), spin, FALSE, FALSE, 6);
+    gtk_widget_show_all(dialog);
+
+    bool accepted = (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK);
+    if (accepted) {
+        app_state.regular_polygon_sides = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spin));
+    }
+
+    gtk_widget_destroy(dialog);
+    return accepted;
+}
+
 // Tool button callback
 void on_tool_clicked(GtkButton* button, gpointer data) {
     Tool new_tool = (Tool)GPOINTER_TO_INT(data);
+
+    if (new_tool == TOOL_REGULAR_POLYGON && !ask_regular_polygon_sides(app_state.window)) {
+        return;
+    }
     
     // Cancel text if switching away from text tool (don't finalize empty text)
     if (app_state.text_active && new_tool != TOOL_TEXT) {
@@ -3629,6 +3776,7 @@ const char* get_tool_icon_filename(Tool tool) {
         case TOOL_RECTANGLE: return "stock_draw-rectangle.png";
         case TOOL_POLYGON: return "stock_draw-fill_polygon.png";
         case TOOL_ELLIPSE: return "stock_draw-ellipse.png";
+        case TOOL_REGULAR_POLYGON: return "stock_draw-fill_polygon.png";
         case TOOL_ROUNDED_RECT: return "stock_draw-rounded-rectangle.png";
         default: return NULL;
     }
@@ -3881,11 +4029,16 @@ int main(int argc, char* argv[]) {
         create_tool_button(TOOL_ELLIPSE, 
             _("Ellipse/Circle - Draw ellipses (hold Shift for circles)")), 
         0, 7, 1, 1);
-    
-    gtk_grid_attach(GTK_GRID(toolbox), 
-        create_tool_button(TOOL_ROUNDED_RECT, 
-            _("Rounded Rectangle - Draw rectangles with rounded corners")), 
+
+    gtk_grid_attach(GTK_GRID(toolbox),
+        create_tool_button(TOOL_ROUNDED_RECT,
+            _("Rounded Rectangle - Draw rectangles with rounded corners")),
         1, 7, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(toolbox),
+        create_tool_button(TOOL_REGULAR_POLYGON,
+            _("Polygon Button - Draw regular polygons (asks for 3-50 sides, hold Ctrl for center, Shift for uniform)")),
+        0, 8, 1, 1);
     
     gtk_box_pack_start(GTK_BOX(tool_column), toolbox, FALSE, FALSE, 0);
 
