@@ -2919,13 +2919,11 @@ void open_image_dialog(GtkWidget* parent) {
                 app_state.canvas_height = height;
 
                 clear_layers();
-                for (int i = 0; i < 3; ++i) {
-                    Layer layer;
-                    layer.name = "Layer " + std::to_string(i + 1);
-                    layer.visible = true;
-                    layer.surface = (i == 0) ? loaded_surface : create_blank_surface(width, height, false);
-                    app_state.layers.push_back(layer);
-                }
+                Layer layer;
+                layer.name = "Layer 1";
+                layer.visible = true;
+                layer.surface = loaded_surface;
+                app_state.layers.push_back(layer);
                 set_active_layer(0);
                 rebuild_layer_panel();
 
