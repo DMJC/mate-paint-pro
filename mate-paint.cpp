@@ -30,6 +30,7 @@ enum Tool {
     TOOL_RECT_SELECT,
     TOOL_ERASER,
     TOOL_FILL,
+    TOOL_GRADIENT_FILL,
     TOOL_EYEDROPPER,
     TOOL_ZOOM,
     TOOL_PENCIL,
@@ -120,6 +121,8 @@ struct AppState {
     std::vector<std::pair<double, double>> lasso_points;
     bool lasso_polygon_mode = false;
     bool ellipse_center_mode = false;
+    bool gradient_fill_first_point_set = false;
+    bool gradient_fill_circular = false;
     int regular_polygon_sides = 5;
     
     // Curve tool state
@@ -258,7 +261,7 @@ const GdkRGBA additional_palette_colors[] = {
 constexpr int custom_palette_slot_count = 14;
 
 std::string get_config_file_path() {
-    gchar* path = g_build_filename(g_get_user_config_dir(), "mate", "mate-paint", "mate-paint.cfg", NULL);
+    gchar* path = g_build_filename(g_get_user_config_dir(), "mate", "mate-paint-pro", "mate-paint.cfg", NULL);
     std::string config_path(path);
     g_free(path);
     return config_path;
@@ -332,7 +335,8 @@ bool tool_needs_preview(Tool tool) {
     return tool == TOOL_LASSO_SELECT || tool == TOOL_RECT_SELECT ||
            tool == TOOL_LINE || tool == TOOL_CURVE ||
            tool == TOOL_RECTANGLE || tool == TOOL_POLYGON ||
-           tool == TOOL_ELLIPSE || tool == TOOL_REGULAR_POLYGON || tool == TOOL_ROUNDED_RECT;
+           tool == TOOL_ELLIPSE || tool == TOOL_REGULAR_POLYGON ||
+           tool == TOOL_ROUNDED_RECT || tool == TOOL_GRADIENT_FILL;
 }
 
 int tool_to_index(Tool tool) {
@@ -1651,6 +1655,66 @@ void flood_fill_at(int start_x, int start_y) {
     cairo_surface_mark_dirty(app_state.surface);
 }
 
+void gradient_fill_at(int start_x, int start_y, int end_x, int end_y, bool circular_gradient) {
+    if (!point_in_canvas(start_x, start_y) || !point_in_canvas(end_x, end_y)) return;
+
+    cairo_surface_flush(app_state.surface);
+    guint32 target = read_pixel(start_x, start_y);
+    unsigned char* data = cairo_image_surface_get_data(app_state.surface);
+    int stride = cairo_image_surface_get_stride(app_state.surface);
+
+    std::queue<std::pair<int, int>> pixels;
+    std::vector<bool> visited(app_state.canvas_width * app_state.canvas_height, false);
+    pixels.push({start_x, start_y});
+    visited[start_y * app_state.canvas_width + start_x] = true;
+
+    double dx = static_cast<double>(end_x - start_x);
+    double dy = static_cast<double>(end_y - start_y);
+    double length_sq = dx * dx + dy * dy;
+    double radius = std::sqrt(length_sq);
+
+    while (!pixels.empty()) {
+        std::pair<int, int> current = pixels.front();
+        pixels.pop();
+
+        int x = current.first;
+        int y = current.second;
+        guint32* row = reinterpret_cast<guint32*>(data + y * stride);
+        if (row[x] != target) continue;
+
+        double t = 0.0;
+        if (circular_gradient) {
+            if (radius > 0.0) {
+                t = std::hypot(static_cast<double>(x - start_x), static_cast<double>(y - start_y)) / radius;
+            }
+        } else if (length_sq > 0.0) {
+            t = ((x - start_x) * dx + (y - start_y) * dy) / length_sq;
+        }
+        t = clamp_double(t, 0.0, 1.0);
+
+        GdkRGBA color;
+        color.red = app_state.fg_color.red + (app_state.bg_color.red - app_state.fg_color.red) * t;
+        color.green = app_state.fg_color.green + (app_state.bg_color.green - app_state.fg_color.green) * t;
+        color.blue = app_state.fg_color.blue + (app_state.bg_color.blue - app_state.fg_color.blue) * t;
+        color.alpha = app_state.fg_color.alpha + (app_state.bg_color.alpha - app_state.fg_color.alpha) * t;
+        row[x] = rgba_to_pixel(color);
+
+        const int neighbors[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+        for (const auto& neighbor : neighbors) {
+            int nx = x + neighbor[0];
+            int ny = y + neighbor[1];
+            if (!point_in_canvas(nx, ny)) continue;
+
+            int index = ny * app_state.canvas_width + nx;
+            if (visited[index]) continue;
+            visited[index] = true;
+            pixels.push({nx, ny});
+        }
+    }
+
+    cairo_surface_mark_dirty(app_state.surface);
+}
+
 // Drawing functions for each tool
 void draw_line(cairo_t* cr, double x1, double y1, double x2, double y2) {
     GdkRGBA color = get_active_color();
@@ -2131,6 +2195,22 @@ void draw_preview(cairo_t* cr) {
             }
             break;
         }
+
+        case TOOL_GRADIENT_FILL: {
+            draw_ant_path(cr);
+            draw_black_outline_circle(cr, app_state.start_x, app_state.start_y, 5.0);
+            draw_black_outline_circle(cr, preview_x, preview_y, 5.0);
+
+            if (app_state.gradient_fill_circular) {
+                double radius = std::hypot(preview_x - app_state.start_x, preview_y - app_state.start_y);
+                cairo_arc(cr, app_state.start_x, app_state.start_y, radius, 0, 2 * M_PI);
+            } else {
+                cairo_move_to(cr, app_state.start_x, app_state.start_y);
+                cairo_line_to(cr, preview_x, preview_y);
+            }
+            cairo_stroke(cr);
+            break;
+        }
         
         case TOOL_POLYGON: {
             if (app_state.polygon_points.size() > 0) {
@@ -2406,6 +2486,35 @@ gboolean on_button_press(GtkWidget* widget, GdkEventButton* event, gpointer data
         if (app_state.current_tool == TOOL_FILL) {
             push_undo_state();
             flood_fill_at(static_cast<int>(canvas_x), static_cast<int>(canvas_y));
+            gtk_widget_queue_draw(widget);
+            return TRUE;
+        }
+
+        if (app_state.current_tool == TOOL_GRADIENT_FILL) {
+            if (!app_state.gradient_fill_first_point_set) {
+                app_state.gradient_fill_first_point_set = true;
+                app_state.gradient_fill_circular = ((event->state & GDK_CONTROL_MASK) != 0);
+                app_state.start_x = canvas_x;
+                app_state.start_y = canvas_y;
+                app_state.current_x = canvas_x;
+                app_state.current_y = canvas_y;
+                app_state.is_drawing = true;
+                start_ant_animation();
+            } else {
+                bool circular_gradient = ((event->state & GDK_CONTROL_MASK) != 0) || app_state.gradient_fill_circular;
+                push_undo_state();
+                gradient_fill_at(
+                    static_cast<int>(app_state.start_x),
+                    static_cast<int>(app_state.start_y),
+                    static_cast<int>(canvas_x),
+                    static_cast<int>(canvas_y),
+                    circular_gradient
+                );
+                app_state.gradient_fill_first_point_set = false;
+                app_state.gradient_fill_circular = false;
+                app_state.is_drawing = false;
+                stop_ant_animation();
+            }
             gtk_widget_queue_draw(widget);
             return TRUE;
         }
@@ -2740,6 +2849,10 @@ gboolean on_leave_notify(GtkWidget* widget, GdkEventCrossing* event, gpointer da
 gboolean on_button_release(GtkWidget* widget, GdkEventButton* event, gpointer data) {
     if ((event->button == 1 || event->button == 3) && app_state.surface && app_state.is_drawing) {
         if (app_state.current_tool == TOOL_ELLIPSE && app_state.ellipse_center_mode) {
+            return TRUE;
+        }
+
+        if (app_state.current_tool == TOOL_GRADIENT_FILL) {
             return TRUE;
         }
 
@@ -3673,7 +3786,7 @@ void on_image_flip_vertical(GtkMenuItem* item, gpointer data) {
 
 void on_help_manual(GtkMenuItem* item, gpointer data) {
     // Use help URI instead of filesystem path
-    const char* uri = "help:mate-paint/contents";
+    const char* uri = "help:mate-paint-pro/contents";
     gchar* command = g_strdup_printf("yelp %s &", uri);
     std::system(command);
     g_free(command);
@@ -3685,7 +3798,7 @@ void on_help_about(GtkMenuItem* item, gpointer data) {
         static_cast<GtkDialogFlags>(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
         GTK_MESSAGE_INFO,
         GTK_BUTTONS_OK,
-        _("Mate-Paint\nVersion 1.0\nCopyright © 2006 James Carthew")
+        _("Mate-Paint-Pro\nVersion 1.0\nCopyright © 2006 James Carthew")
     );
     gtk_window_set_title(GTK_WINDOW(dialog), _("About"));
     gtk_dialog_run(GTK_DIALOG(dialog));
@@ -3761,6 +3874,8 @@ void on_tool_clicked(GtkButton* button, gpointer data) {
     app_state.lasso_points.clear();
     app_state.lasso_polygon_mode = false;
     app_state.ellipse_center_mode = false;
+    app_state.gradient_fill_first_point_set = false;
+    app_state.gradient_fill_circular = false;
     app_state.curve_active = false;
     app_state.curve_has_end = false;
     app_state.curve_has_control = false;
@@ -4070,6 +4185,7 @@ const char* get_tool_icon_filename(Tool tool) {
         case TOOL_RECT_SELECT: return "stock-tool-rect-select.png";
         case TOOL_ERASER: return "stock-tool-eraser.png";
         case TOOL_FILL: return "stock-tool-bucket-fill.png";
+        case TOOL_GRADIENT_FILL: return "stock-tool-gradient-fill.png";
         case TOOL_EYEDROPPER: return "stock-tool-color-picker.png";
         case TOOL_ZOOM: return "stock-tool-zoom.png";
         case TOOL_PENCIL: return "stock-tool-pencil.png";
@@ -4149,7 +4265,7 @@ int main(int argc, char* argv[]) {
     gtk_init(&argc, &argv);
 
     app_state.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(app_state.window), _("Mate-Paint"));
+    gtk_window_set_title(GTK_WINDOW(app_state.window), _("Mate-Paint Pro"));
     gtk_window_set_default_size(GTK_WINDOW(app_state.window), 900, 700);
     g_signal_connect(app_state.window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
     g_signal_connect(app_state.window, "key-press-event", G_CALLBACK(on_key_press), NULL);
@@ -4294,6 +4410,11 @@ int main(int argc, char* argv[]) {
         create_tool_button(TOOL_FILL, 
             _("Fill Tool - Fill areas with color")), 
         0, 1, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(toolbox),
+        create_tool_button(TOOL_GRADIENT_FILL,
+            _("Gradient Fill - Click start and end points (hold Ctrl for circular gradient)")),
+        0, 2, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_EYEDROPPER, 
@@ -4303,7 +4424,7 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ERASER, 
             _("Eraser - Erase to transparency")), 
-        0, 2, 1, 1);
+        0, 3, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ZOOM, 
@@ -4313,7 +4434,7 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_PENCIL, 
             _("Pencil - Draw thin lines")), 
-        0, 3, 1, 1);
+        0, 4, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_PAINTBRUSH, 
@@ -4323,7 +4444,7 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_AIRBRUSH, 
             _("Airbrush - Spray paint effect")), 
-        0, 4, 1, 1);
+        0, 5, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_TEXT, 
@@ -4333,7 +4454,7 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_LINE, 
             _("Line Tool - Draw straight lines (hold Shift for horizontal/vertical)")), 
-        0, 5, 1, 1);
+        0, 6, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_CURVE, 
@@ -4343,7 +4464,7 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_RECTANGLE, 
             _("Rectangle - Draw rectangles")), 
-        0, 6, 1, 1);
+        0, 7, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_POLYGON, 
@@ -4353,7 +4474,7 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ELLIPSE, 
             _("Ellipse/Circle - Draw ellipses (hold Shift for circles)")), 
-        0, 7, 1, 1);
+        0, 8, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_ROUNDED_RECT,
@@ -4363,7 +4484,7 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_REGULAR_POLYGON,
             _("Polygon Button - Draw regular polygons (asks for 3-50 sides, hold Ctrl for center, Shift for uniform)")),
-        0, 8, 1, 1);
+        0, 9, 1, 1);
     
     gtk_box_pack_start(GTK_BOX(tool_column), toolbox, FALSE, FALSE, 0);
 

@@ -10,6 +10,7 @@ install_data([
   'stock-tool-bucket-fill.png',
   'stock-tool-color-picker.png',
   'stock-tool-eraser.png',
+  'stock-tool-gradient-fill.png',
   'stock-tool-paintbrush.png',
   'stock-tool-pencil.png',
   'stock-tool-rect-select.png',
