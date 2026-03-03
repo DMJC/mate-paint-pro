@@ -3776,7 +3776,7 @@ const char* get_tool_icon_filename(Tool tool) {
         case TOOL_RECTANGLE: return "stock_draw-rectangle.png";
         case TOOL_POLYGON: return "stock_draw-fill_polygon.png";
         case TOOL_ELLIPSE: return "stock_draw-ellipse.png";
-        case TOOL_REGULAR_POLYGON: return "stock_draw-fill_polygon.png";
+        case TOOL_REGULAR_POLYGON: return "stock_draw-pentagon.png";
         case TOOL_ROUNDED_RECT: return "stock_draw-rounded-rectangle.png";
         default: return NULL;
     }
@@ -3789,7 +3789,7 @@ GtkWidget* create_tool_icon(Tool tool) {
     }
 
     const char* icon_roots[] = {
-        "/usr/share/mate-paint",
+        "/usr/share/mate-paint-pro",
         "."
     };
 

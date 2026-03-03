@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Mate Paint
+Name=Mate Paint Pro
 Comment=Create and edit images
 X-GNOME-Gettext-Domain=mate-paint
 Exec=mate-paint-pro

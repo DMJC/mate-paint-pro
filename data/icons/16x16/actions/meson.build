@@ -3,6 +3,7 @@ install_data([
   'stock_draw-ellipse.png',
   'stock_draw-line.png',
   'stock_draw-rectangle.png',
+  'stock_draw-pentagon.png',
   'stock_draw-rounded-rectangle.png',
   'stock-tool-free-select.png',
   'stock-tool-airbrush.png',
