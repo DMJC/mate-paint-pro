@@ -74,6 +74,8 @@ void load_custom_palette_colors();
 void save_custom_palette_colors();
 void rebuild_layer_panel();
 void set_active_layer(int index);
+void add_new_layer();
+void delete_layer(int index);
 
 struct UndoSnapshot {
     cairo_surface_t* surface = nullptr;
@@ -179,6 +181,7 @@ struct AppState {
     std::vector<GtkWidget*> palette_buttons;
     GtkWidget* layer_list_box = nullptr;
     GtkWidget* layer_panel = nullptr;
+    GtkWidget* add_layer_button = nullptr;
 
     bool show_vertical_center_guide = false;
     bool show_horizontal_center_guide = false;
@@ -1301,14 +1304,52 @@ void clear_layers() {
 
 void ensure_default_layers() {
     clear_layers();
-    for (int i = 0; i < 3; ++i) {
-        Layer layer;
-        layer.name = "Layer " + std::to_string(i + 1);
-        layer.visible = true;
-        layer.surface = create_blank_surface(app_state.canvas_width, app_state.canvas_height, i == 0);
-        app_state.layers.push_back(layer);
-    }
+    Layer layer;
+    layer.name = "Layer 1";
+    layer.visible = true;
+    layer.surface = create_blank_surface(app_state.canvas_width, app_state.canvas_height, true);
+    app_state.layers.push_back(layer);
     set_active_layer(0);
+}
+
+void add_new_layer() {
+    Layer layer;
+    layer.name = "Layer " + std::to_string(app_state.layers.size() + 1);
+    layer.visible = true;
+    layer.surface = create_blank_surface(app_state.canvas_width, app_state.canvas_height, false);
+    app_state.layers.push_back(layer);
+    set_active_layer((int)app_state.layers.size() - 1);
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+void delete_layer(int index) {
+    if (index < 0 || index >= (int)app_state.layers.size()) {
+        return;
+    }
+    if (app_state.layers.size() <= 1) {
+        return;
+    }
+
+    if (app_state.layers[index].surface) {
+        cairo_surface_destroy(app_state.layers[index].surface);
+        app_state.layers[index].surface = nullptr;
+    }
+
+    app_state.layers.erase(app_state.layers.begin() + index);
+    if (app_state.active_layer_index >= (int)app_state.layers.size()) {
+        app_state.active_layer_index = (int)app_state.layers.size() - 1;
+    } else if (app_state.active_layer_index > index) {
+        app_state.active_layer_index--;
+    } else if (app_state.active_layer_index == index) {
+        app_state.active_layer_index = std::max(0, index - 1);
+    }
+
+    set_active_layer(app_state.active_layer_index);
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
 }
 
 void rebuild_layer_panel() {
@@ -1347,9 +1388,16 @@ void rebuild_layer_panel() {
             app_state.layers[idx].name = gtk_entry_get_text(GTK_ENTRY(editable));
         }), GINT_TO_POINTER(i));
 
+        GtkWidget* delete_button = gtk_button_new_with_label("-");
+        gtk_widget_set_sensitive(delete_button, app_state.layers.size() > 1);
+        g_signal_connect(delete_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+            delete_layer(GPOINTER_TO_INT(data));
+        }), GINT_TO_POINTER(i));
+
         gtk_box_pack_start(GTK_BOX(row), layer.visible_check, FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(row), layer.select_button, FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(row), layer.name_entry, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(row), delete_button, FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(app_state.layer_list_box), row, FALSE, FALSE, 0);
     }
     gtk_widget_show_all(app_state.layer_list_box);
@@ -2871,13 +2919,11 @@ void open_image_dialog(GtkWidget* parent) {
                 app_state.canvas_height = height;
 
                 clear_layers();
-                for (int i = 0; i < 3; ++i) {
-                    Layer layer;
-                    layer.name = "Layer " + std::to_string(i + 1);
-                    layer.visible = true;
-                    layer.surface = (i == 0) ? loaded_surface : create_blank_surface(width, height, false);
-                    app_state.layers.push_back(layer);
-                }
+                Layer layer;
+                layer.name = "Layer 1";
+                layer.visible = true;
+                layer.surface = loaded_surface;
+                app_state.layers.push_back(layer);
                 set_active_layer(0);
                 rebuild_layer_panel();
 
@@ -4201,6 +4247,11 @@ int main(int argc, char* argv[]) {
     gtk_box_pack_start(GTK_BOX(app_state.layer_panel), layers_label, FALSE, FALSE, 0);
     app_state.layer_list_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_box_pack_start(GTK_BOX(app_state.layer_panel), app_state.layer_list_box, FALSE, FALSE, 0);
+    app_state.add_layer_button = gtk_button_new_with_label(_("+ Add a Layer"));
+    g_signal_connect(app_state.add_layer_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+        add_new_layer();
+    }), NULL);
+    gtk_box_pack_start(GTK_BOX(app_state.layer_panel), app_state.add_layer_button, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(content_box), app_state.layer_panel, FALSE, FALSE, 0);
     
     GtkWidget* bottom_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
