@@ -1,4 +1,4 @@
-project('mate-paint', 'cpp',
+project('mate-paint-pro', 'cpp',
   version: '1.0.0',
   default_options: [
     'cpp_std=c++11',
@@ -12,7 +12,7 @@ gtk_dep = dependency('gtk+-3.0')
 
 icon_install_dir = join_paths(get_option('prefix'), get_option('datadir'), meson.project_name())
 
-executable('mate-paint',
+executable('mate-paint-pro',
   'mate-paint.cpp',
   dependencies: gtk_dep,
   cpp_args: [
@@ -25,7 +25,7 @@ executable('mate-paint',
 
 install_subdir('data', install_dir: icon_install_dir)
 
-install_data('mate-paint.desktop',
+install_data('mate-paint-pro.desktop',
   install_dir: join_paths(get_option('prefix'), get_option('datadir'), 'applications')
 )
 

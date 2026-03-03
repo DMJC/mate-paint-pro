@@ -1,6 +1,6 @@
-MATE-Paint
+MATE-Paint-Pro
 --
-A simple drawing tool for the MATE Desktop.
+An Advanced Drawing/Image Editing Tool for the MATE Desktop.
 
 Installation and Prerequisites
 --
