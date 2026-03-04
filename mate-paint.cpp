@@ -31,6 +31,7 @@ enum Tool {
     TOOL_ERASER,
     TOOL_FILL,
     TOOL_GRADIENT_FILL,
+    TOOL_SMUDGE,
     TOOL_EYEDROPPER,
     TOOL_ZOOM,
     TOOL_PENCIL,
@@ -345,13 +346,13 @@ int tool_to_index(Tool tool) {
 }
 
 bool tool_supports_line_thickness(Tool tool) {
-    return tool == TOOL_PAINTBRUSH || tool == TOOL_AIRBRUSH || tool == TOOL_ERASER ||
+    return tool == TOOL_PAINTBRUSH || tool == TOOL_AIRBRUSH || tool == TOOL_ERASER || tool == TOOL_SMUDGE ||
            tool == TOOL_LINE || tool == TOOL_CURVE || tool == TOOL_RECTANGLE ||
            tool == TOOL_POLYGON || tool == TOOL_ELLIPSE || tool == TOOL_REGULAR_POLYGON || tool == TOOL_ROUNDED_RECT;
 }
 
 bool tool_shows_brush_hover_outline(Tool tool) {
-    return tool == TOOL_PAINTBRUSH || tool == TOOL_AIRBRUSH || tool == TOOL_ERASER || tool == TOOL_ELLIPSE ||  tool == TOOL_LASSO_SELECT;
+    return tool == TOOL_PAINTBRUSH || tool == TOOL_AIRBRUSH || tool == TOOL_ERASER || tool == TOOL_SMUDGE || tool == TOOL_ELLIPSE ||  tool == TOOL_LASSO_SELECT;
 }
 
 bool tool_shows_vertex_hover_markers(Tool tool) {
@@ -1879,6 +1880,57 @@ void draw_eraser(cairo_t* cr, double x, double y) {
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 }
 
+void draw_smudge(double x, double y) {
+    if (app_state.last_x == 0 && app_state.last_y == 0) {
+        return;
+    }
+
+    int source_x = static_cast<int>(std::round(app_state.last_x));
+    int source_y = static_cast<int>(std::round(app_state.last_y));
+    int target_x = static_cast<int>(std::round(x));
+    int target_y = static_cast<int>(std::round(y));
+
+    cairo_surface_flush(app_state.surface);
+    unsigned char* data = cairo_image_surface_get_data(app_state.surface);
+    int stride = cairo_image_surface_get_stride(app_state.surface);
+
+    const int radius = static_cast<int>(std::round(app_state.line_width * 2.0));
+    const double strength = 0.35;
+
+    for (int dy = -radius; dy <= radius; ++dy) {
+        for (int dx = -radius; dx <= radius; ++dx) {
+            if (dx * dx + dy * dy > radius * radius) {
+                continue;
+            }
+
+            int sx = source_x + dx;
+            int sy = source_y + dy;
+            int tx = target_x + dx;
+            int ty = target_y + dy;
+
+            if (!point_in_canvas(sx, sy) || !point_in_canvas(tx, ty)) {
+                continue;
+            }
+
+            guint32* source_row = reinterpret_cast<guint32*>(data + sy * stride);
+            guint32* target_row = reinterpret_cast<guint32*>(data + ty * stride);
+            GdkRGBA source = pixel_to_rgba(source_row[sx]);
+            GdkRGBA target = pixel_to_rgba(target_row[tx]);
+
+            GdkRGBA mixed;
+            mixed.red = target.red + (source.red - target.red) * strength;
+            mixed.green = target.green + (source.green - target.green) * strength;
+            mixed.blue = target.blue + (source.blue - target.blue) * strength;
+            mixed.alpha = target.alpha + (source.alpha - target.alpha) * strength;
+
+            target_row[tx] = rgba_to_pixel(mixed);
+        }
+    }
+
+    cairo_surface_mark_dirty(app_state.surface);
+}
+
+
 // Draw text box overlay
 void draw_text_overlay(cairo_t* cr) {
     if (!app_state.text_active) return;
@@ -2769,6 +2821,7 @@ gboolean on_button_press(GtkWidget* widget, GdkEventButton* event, gpointer data
         app_state.is_drawing = true;
         if (app_state.current_tool == TOOL_PENCIL || app_state.current_tool == TOOL_PAINTBRUSH ||
             app_state.current_tool == TOOL_AIRBRUSH || app_state.current_tool == TOOL_ERASER ||
+            app_state.current_tool == TOOL_SMUDGE ||
             app_state.current_tool == TOOL_LINE || app_state.current_tool == TOOL_CURVE ||
 			app_state.current_tool == TOOL_RECTANGLE || app_state.current_tool == TOOL_ELLIPSE ||
             app_state.current_tool == TOOL_REGULAR_POLYGON || app_state.current_tool == TOOL_ROUNDED_RECT) {
@@ -2869,9 +2922,16 @@ gboolean on_motion_notify(GtkWidget* widget, GdkEventMotion* event, gpointer dat
                 case TOOL_ERASER:
                     draw_eraser(cr, canvas_x, canvas_y);
                     break;
+                case TOOL_SMUDGE:
+                    cairo_destroy(cr);
+                    draw_smudge(canvas_x, canvas_y);
+                    cr = nullptr;
+                    break;
             }
             
-            cairo_destroy(cr);
+            if (cr) {
+                cairo_destroy(cr);
+            }
             app_state.last_x = canvas_x;
             app_state.last_y = canvas_y;
             gtk_widget_queue_draw(widget);
@@ -4230,6 +4290,7 @@ const char* get_tool_icon_filename(Tool tool) {
         case TOOL_ERASER: return "stock-tool-eraser.png";
         case TOOL_FILL: return "stock-tool-bucket-fill.png";
         case TOOL_GRADIENT_FILL: return "stock-tool-gradient-fill.png";
+        case TOOL_SMUDGE: return "stock-tool-smudge.png";
         case TOOL_EYEDROPPER: return "stock-tool-color-picker.png";
         case TOOL_ZOOM: return "stock-tool-zoom.png";
         case TOOL_PENCIL: return "stock-tool-pencil.png";
@@ -4459,6 +4520,11 @@ int main(int argc, char* argv[]) {
         create_tool_button(TOOL_GRADIENT_FILL,
             _("Gradient Fill - Click start and end points (hold Ctrl for circular gradient)")),
         0, 2, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(toolbox),
+        create_tool_button(TOOL_SMUDGE,
+            _("Smudge Tool - Drag to smear existing pixels")),
+        1, 2, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_EYEDROPPER, 
@@ -4473,7 +4539,7 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ZOOM, 
             _("Zoom Tool - Zoom in/out")), 
-        1, 2, 1, 1);
+        1, 9, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_PENCIL, 
