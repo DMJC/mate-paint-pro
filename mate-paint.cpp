@@ -1603,6 +1603,7 @@ void redo_last_operation() {
     }
 
     app_state.surface = snapshot.surface;
+    if (!app_state.layers.empty()) app_state.layers[app_state.active_layer_index].surface = app_state.surface;
     app_state.canvas_width = snapshot.width;
     app_state.canvas_height = snapshot.height;
 

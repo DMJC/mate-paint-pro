@@ -14,6 +14,7 @@ install_data([
   'stock-tool-paintbrush.png',
   'stock-tool-pencil.png',
   'stock-tool-rect-select.png',
+  'stock-tool-smudge.png',
   'stock-tool-text.png',
   'stock-tool-zoom.png',
   'stock_draw-fill_polygon.png',
