@@ -73,6 +73,7 @@ void update_canvas_dimensions_label();
 void update_cursor_position_label(double canvas_x, double canvas_y, bool cursor_in_canvas);
 void push_undo_state();
 void undo_last_operation();
+void redo_last_operation();
 void draw_canvas_grid_background(cairo_t* cr, double width, double height);
 bool is_transparent_color(const GdkRGBA& color);
 bool save_surface_to_file(cairo_surface_t* surface, const std::string& filename);
@@ -205,6 +206,7 @@ struct AppState {
     std::string current_filename;
 
     std::vector<UndoSnapshot> undo_stack;
+    std::vector<UndoSnapshot> redo_stack;
     static constexpr size_t max_undo_steps = 50;
     bool drag_undo_snapshot_taken = false;
 };
@@ -1523,11 +1525,28 @@ void push_undo_state() {
         cairo_surface_destroy(app_state.undo_stack.front().surface);
         app_state.undo_stack.erase(app_state.undo_stack.begin());
     }
+    for (UndoSnapshot& redo_snapshot : app_state.redo_stack) {
+        cairo_surface_destroy(redo_snapshot.surface);
+    }
+    app_state.redo_stack.clear();
 }
 
 void undo_last_operation() {
     if (app_state.undo_stack.empty()) {
         return;
+    }
+
+    cairo_surface_t* redo_surface = clone_surface(app_state.surface, app_state.canvas_width, app_state.canvas_height);
+    if (redo_surface) {
+        UndoSnapshot redo_snapshot;
+        redo_snapshot.surface = redo_surface;
+        redo_snapshot.width = app_state.canvas_width;
+        redo_snapshot.height = app_state.canvas_height;
+        app_state.redo_stack.push_back(redo_snapshot);
+        if (app_state.redo_stack.size() > AppState::max_undo_steps) {
+            cairo_surface_destroy(app_state.redo_stack.front().surface);
+            app_state.redo_stack.erase(app_state.redo_stack.begin());
+        }
     }
 
     UndoSnapshot snapshot = app_state.undo_stack.back();
@@ -1539,6 +1558,51 @@ void undo_last_operation() {
 
     app_state.surface = snapshot.surface;
     if (!app_state.layers.empty()) app_state.layers[app_state.active_layer_index].surface = app_state.surface;
+    app_state.canvas_width = snapshot.width;
+    app_state.canvas_height = snapshot.height;
+
+    clear_selection();
+    if (app_state.text_active) {
+        cancel_text();
+    }
+    app_state.drag_undo_snapshot_taken = false;
+
+    if (app_state.drawing_area) {
+        gtk_widget_set_size_request(
+            app_state.drawing_area,
+            static_cast<int>(app_state.canvas_width * app_state.zoom_factor),
+            static_cast<int>(app_state.canvas_height * app_state.zoom_factor)
+        );
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+void redo_last_operation() {
+    if (app_state.redo_stack.empty()) {
+        return;
+    }
+
+    cairo_surface_t* undo_surface = clone_surface(app_state.surface, app_state.canvas_width, app_state.canvas_height);
+    if (undo_surface) {
+        UndoSnapshot undo_snapshot;
+        undo_snapshot.surface = undo_surface;
+        undo_snapshot.width = app_state.canvas_width;
+        undo_snapshot.height = app_state.canvas_height;
+        app_state.undo_stack.push_back(undo_snapshot);
+        if (app_state.undo_stack.size() > AppState::max_undo_steps) {
+            cairo_surface_destroy(app_state.undo_stack.front().surface);
+            app_state.undo_stack.erase(app_state.undo_stack.begin());
+        }
+    }
+
+    UndoSnapshot snapshot = app_state.redo_stack.back();
+    app_state.redo_stack.pop_back();
+
+    if (app_state.surface) {
+        cairo_surface_destroy(app_state.surface);
+    }
+
+    app_state.surface = snapshot.surface;
     app_state.canvas_width = snapshot.width;
     app_state.canvas_height = snapshot.height;
 
@@ -2465,6 +2529,10 @@ gboolean on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer data) {
         cut_selection();
     } else if ((event->state & GDK_CONTROL_MASK) && event->keyval == GDK_KEY_v) {
         paste_selection();
+    } else if ((event->state & GDK_CONTROL_MASK) && (event->state & GDK_SHIFT_MASK) && event->keyval == GDK_KEY_Z) {
+        redo_last_operation();
+    } else if ((event->state & GDK_CONTROL_MASK) && event->keyval == GDK_KEY_y) {
+        redo_last_operation();
     } else if ((event->state & GDK_CONTROL_MASK) && event->keyval == GDK_KEY_z) {
         undo_last_operation();
     }
@@ -3464,6 +3532,10 @@ void on_edit_undo(GtkMenuItem* item, gpointer data) {
     undo_last_operation();
 }
 
+void on_edit_redo(GtkMenuItem* item, gpointer data) {
+    redo_last_operation();
+}
+
 void on_image_scale(GtkMenuItem* item, gpointer data) {
     if (!app_state.surface) return;
 
@@ -4409,16 +4481,19 @@ int main(int argc, char* argv[]) {
     GtkWidget* edit_menu = gtk_menu_new();
     GtkWidget* edit_menu_item = gtk_menu_item_new_with_label(_("Edit"));
     GtkWidget* edit_undo = gtk_menu_item_new_with_label(_("Undo"));
+    GtkWidget* edit_redo = gtk_menu_item_new_with_label(_("Redo"));
     GtkWidget* edit_cut = gtk_menu_item_new_with_label(_("Cut"));
     GtkWidget* edit_copy = gtk_menu_item_new_with_label(_("Copy"));
     GtkWidget* edit_paste = gtk_menu_item_new_with_label(_("Paste"));
 
     g_signal_connect(edit_undo, "activate", G_CALLBACK(on_edit_undo), NULL);
+    g_signal_connect(edit_redo, "activate", G_CALLBACK(on_edit_redo), NULL);
     g_signal_connect(edit_cut, "activate", G_CALLBACK(on_edit_cut), NULL);
     g_signal_connect(edit_copy, "activate", G_CALLBACK(on_edit_copy), NULL);
     g_signal_connect(edit_paste, "activate", G_CALLBACK(on_edit_paste), NULL);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), edit_undo);
+    gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), edit_redo);
     gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), gtk_separator_menu_item_new());
     gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), edit_cut);
     gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), edit_copy);
