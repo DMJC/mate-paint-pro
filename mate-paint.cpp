@@ -17,6 +17,7 @@ struct Layer {
     cairo_surface_t* surface = nullptr;
     std::string name;
     bool visible = true;
+    double opacity = 1.0;
     GtkWidget* visible_check = nullptr;
     GtkWidget* name_entry = nullptr;
     GtkWidget* select_button = nullptr;
@@ -83,6 +84,9 @@ void rebuild_layer_panel();
 void set_active_layer(int index);
 void add_new_layer();
 void delete_layer(int index);
+void move_layer_up(int index);
+void move_layer_down(int index);
+void sync_layer_controls();
 bool ask_regular_polygon_sides(GtkWidget* parent);
 void build_regular_polygon_points(double start_x, double start_y, double end_x, double end_y, bool from_center, bool uniform, int sides, std::vector<std::pair<double, double>>& points);
 void draw_regular_polygon(cairo_t* cr, const std::vector<std::pair<double, double>>& points);
@@ -198,6 +202,9 @@ struct AppState {
     GtkWidget* layer_list_box = nullptr;
     GtkWidget* layer_panel = nullptr;
     GtkWidget* add_layer_button = nullptr;
+    GtkWidget* layer_move_up_button = nullptr;
+    GtkWidget* layer_move_down_button = nullptr;
+    GtkWidget* layer_opacity_scale = nullptr;
 
     bool show_vertical_center_guide = false;
     bool show_horizontal_center_guide = false;
@@ -1372,6 +1379,22 @@ cairo_surface_t* create_blank_surface(int width, int height, bool fill_white) {
     return surface;
 }
 
+void sync_layer_controls() {
+    if (app_state.layers.empty()) {
+        return;
+    }
+
+    if (app_state.layer_move_up_button) {
+        gtk_widget_set_sensitive(app_state.layer_move_up_button, app_state.active_layer_index < (int)app_state.layers.size() - 1);
+    }
+    if (app_state.layer_move_down_button) {
+        gtk_widget_set_sensitive(app_state.layer_move_down_button, app_state.active_layer_index > 0);
+    }
+    if (app_state.layer_opacity_scale) {
+        gtk_range_set_value(GTK_RANGE(app_state.layer_opacity_scale), app_state.layers[app_state.active_layer_index].opacity);
+    }
+}
+
 void set_active_layer(int index) {
     if (index < 0 || index >= (int)app_state.layers.size()) {
         return;
@@ -1410,6 +1433,32 @@ void add_new_layer() {
     layer.surface = create_blank_surface(app_state.canvas_width, app_state.canvas_height, false);
     app_state.layers.push_back(layer);
     set_active_layer((int)app_state.layers.size() - 1);
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+void move_layer_up(int index) {
+    if (index < 0 || index >= (int)app_state.layers.size() - 1) {
+        return;
+    }
+    std::swap(app_state.layers[index], app_state.layers[index + 1]);
+    app_state.active_layer_index = index + 1;
+    app_state.surface = app_state.layers[app_state.active_layer_index].surface;
+    rebuild_layer_panel();
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+void move_layer_down(int index) {
+    if (index <= 0 || index >= (int)app_state.layers.size()) {
+        return;
+    }
+    std::swap(app_state.layers[index], app_state.layers[index - 1]);
+    app_state.active_layer_index = index - 1;
+    app_state.surface = app_state.layers[app_state.active_layer_index].surface;
+    rebuild_layer_panel();
     if (app_state.drawing_area) {
         gtk_widget_queue_draw(app_state.drawing_area);
     }
@@ -1491,6 +1540,7 @@ void rebuild_layer_panel() {
         gtk_box_pack_start(GTK_BOX(app_state.layer_list_box), row, FALSE, FALSE, 0);
     }
     gtk_widget_show_all(app_state.layer_list_box);
+    sync_layer_controls();
 }
 
 cairo_surface_t* clone_surface(cairo_surface_t* source, int width, int height) {
@@ -2376,7 +2426,7 @@ void get_visible_composited_rgb(int x, int y, guint8& out_r, guint8& out_g, guin
         unsigned char* data = cairo_image_surface_get_data(layer.surface);
         int stride = cairo_image_surface_get_stride(layer.surface);
         guint32 pixel = *reinterpret_cast<guint32*>(data + y * stride + x * 4);
-        double sa = ((pixel >> 24) & 0xFF) / 255.0;
+        double sa = (((pixel >> 24) & 0xFF) / 255.0) * layer.opacity;
         double sr = ((pixel >> 16) & 0xFF) / 255.0;
         double sg = ((pixel >> 8) & 0xFF) / 255.0;
         double sb = (pixel & 0xFF) / 255.0;
@@ -2478,7 +2528,7 @@ gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer data) {
         if (!layer.visible || !layer.surface) continue;
         cairo_set_source_surface(cr, layer.surface, 0, 0);
         cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_NEAREST);
-        cairo_paint(cr);
+        cairo_paint_with_alpha(cr, layer.opacity);
     }
  
     if (app_state.floating_selection_active && app_state.floating_surface) {
@@ -3192,7 +3242,7 @@ cairo_surface_t* compose_visible_layers_surface() {
     for (const Layer& layer : app_state.layers) {
         if (!layer.visible || !layer.surface) continue;
         cairo_set_source_surface(cr, layer.surface, 0, 0);
-        cairo_paint(cr);
+        cairo_paint_with_alpha(cr, layer.opacity);
     }
     cairo_destroy(cr);
     return composed;
@@ -4732,8 +4782,32 @@ int main(int argc, char* argv[]) {
     gtk_widget_set_margin_start(app_state.layer_panel, 6);
     gtk_widget_set_margin_end(app_state.layer_panel, 6);
     gtk_widget_set_margin_top(app_state.layer_panel, 6);
+    GtkWidget* layer_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     GtkWidget* layers_label = gtk_label_new(_("Layers"));
-    gtk_box_pack_start(GTK_BOX(app_state.layer_panel), layers_label, FALSE, FALSE, 0);
+    app_state.layer_move_up_button = gtk_button_new_with_label("+");
+    app_state.layer_move_down_button = gtk_button_new_with_label("-");
+    g_signal_connect(app_state.layer_move_up_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+        move_layer_up(app_state.active_layer_index);
+    }), NULL);
+    g_signal_connect(app_state.layer_move_down_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+        move_layer_down(app_state.active_layer_index);
+    }), NULL);
+    gtk_box_pack_start(GTK_BOX(layer_header), layers_label, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(layer_header), app_state.layer_move_up_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(layer_header), app_state.layer_move_down_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(app_state.layer_panel), layer_header, FALSE, FALSE, 0);
+
+    app_state.layer_opacity_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0.0, 1.0, 0.01);
+    gtk_scale_set_draw_value(GTK_SCALE(app_state.layer_opacity_scale), FALSE);
+    gtk_range_set_value(GTK_RANGE(app_state.layer_opacity_scale), 1.0);
+    gtk_widget_set_tooltip_text(app_state.layer_opacity_scale, _("Layer opacity"));
+    g_signal_connect(app_state.layer_opacity_scale, "value-changed", G_CALLBACK(+[](GtkRange* range, gpointer data) {
+        if (app_state.layers.empty()) return;
+        app_state.layers[app_state.active_layer_index].opacity = gtk_range_get_value(range);
+        if (app_state.drawing_area) gtk_widget_queue_draw(app_state.drawing_area);
+    }), NULL);
+    gtk_box_pack_start(GTK_BOX(app_state.layer_panel), app_state.layer_opacity_scale, FALSE, FALSE, 0);
+
     app_state.layer_list_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_box_pack_start(GTK_BOX(app_state.layer_panel), app_state.layer_list_box, FALSE, FALSE, 0);
     app_state.add_layer_button = gtk_button_new_with_label(_("+ Add a Layer"));
