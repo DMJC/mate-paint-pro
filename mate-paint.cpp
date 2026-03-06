@@ -3900,6 +3900,271 @@ void on_layer_delete(GtkMenuItem* item, gpointer data) {
     delete_layer(app_state.active_layer_index);
 }
 
+static bool has_active_layer_surface() {
+    return !app_state.layers.empty() &&
+           app_state.active_layer_index >= 0 &&
+           app_state.active_layer_index < (int)app_state.layers.size() &&
+           app_state.surface != nullptr;
+}
+
+static void stroke_horizontal_lines(int line_count, int vertical_offset, int spacing) {
+    cairo_t* cr = cairo_create(app_state.surface);
+    configure_crisp_rendering(cr);
+    cairo_set_source_rgba(cr, app_state.fg_color.red, app_state.fg_color.green, app_state.fg_color.blue, app_state.fg_color.alpha);
+    cairo_set_line_width(cr, app_state.line_width);
+
+    for (int i = 0; i < line_count; ++i) {
+        const double y = vertical_offset + (i * spacing);
+        if (y < 0.0 || y > app_state.canvas_height) continue;
+        cairo_move_to(cr, 0.0, y);
+        cairo_line_to(cr, app_state.canvas_width, y);
+    }
+
+    cairo_stroke(cr);
+    cairo_destroy(cr);
+}
+
+static void stroke_vertical_lines(int line_count, int horizontal_offset, int spacing) {
+    cairo_t* cr = cairo_create(app_state.surface);
+    configure_crisp_rendering(cr);
+    cairo_set_source_rgba(cr, app_state.fg_color.red, app_state.fg_color.green, app_state.fg_color.blue, app_state.fg_color.alpha);
+    cairo_set_line_width(cr, app_state.line_width);
+
+    for (int i = 0; i < line_count; ++i) {
+        const double x = horizontal_offset + (i * spacing);
+        if (x < 0.0 || x > app_state.canvas_width) continue;
+        cairo_move_to(cr, x, 0.0);
+        cairo_line_to(cr, x, app_state.canvas_height);
+    }
+
+    cairo_stroke(cr);
+    cairo_destroy(cr);
+}
+
+static void queue_canvas_redraw_after_layer_draw() {
+    if (!app_state.layers.empty()) {
+        app_state.layers[app_state.active_layer_index].surface = app_state.surface;
+    }
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+void on_layer_draw_horizontal_lines(GtkMenuItem* item, gpointer data) {
+    if (!has_active_layer_surface()) return;
+
+    GtkWidget* dialog = gtk_dialog_new_with_buttons(
+        _("Draw Horizontal Lines"),
+        GTK_WINDOW(app_state.window),
+        (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
+        _("_Cancel"), GTK_RESPONSE_CANCEL,
+        _("_Draw"), GTK_RESPONSE_OK,
+        NULL
+    );
+
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget* grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
+    gtk_container_add(GTK_CONTAINER(content), grid);
+
+    GtkWidget* count_label = gtk_label_new(_("Number Of Lines:"));
+    GtkWidget* offset_label = gtk_label_new(_("Vertical Offset:"));
+    GtkWidget* spacing_label = gtk_label_new(_("Spacing:"));
+    gtk_widget_set_halign(count_label, GTK_ALIGN_START);
+    gtk_widget_set_halign(offset_label, GTK_ALIGN_START);
+    gtk_widget_set_halign(spacing_label, GTK_ALIGN_START);
+
+    GtkWidget* count_spin = gtk_spin_button_new_with_range(1, 1000, 1);
+    GtkWidget* offset_spin = gtk_spin_button_new_with_range(0, 10000, 1);
+    GtkWidget* spacing_spin = gtk_spin_button_new_with_range(1, 10000, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(count_spin), 5);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(offset_spin), 10);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spacing_spin), 25);
+
+    GtkWidget* reset_button = gtk_button_new_with_label(_("Reset"));
+
+    gtk_grid_attach(GTK_GRID(grid), count_label, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), count_spin, 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), offset_label, 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), offset_spin, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), spacing_label, 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), spacing_spin, 1, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), reset_button, 0, 3, 2, 1);
+
+    g_object_set_data(G_OBJECT(reset_button), "count-spin", count_spin);
+    g_object_set_data(G_OBJECT(reset_button), "offset-spin", offset_spin);
+    g_object_set_data(G_OBJECT(reset_button), "spacing-spin", spacing_spin);
+    g_signal_connect(reset_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer user_data) {
+        GtkWidget* count_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "count-spin"));
+        GtkWidget* offset_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "offset-spin"));
+        GtkWidget* spacing_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "spacing-spin"));
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(count_spin), 5);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(offset_spin), 10);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(spacing_spin), 25);
+    }), NULL);
+
+    gtk_widget_show_all(dialog);
+    const int response = gtk_dialog_run(GTK_DIALOG(dialog));
+
+    if (response == GTK_RESPONSE_OK && has_active_layer_surface()) {
+        const int line_count = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(count_spin));
+        const int vertical_offset = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(offset_spin));
+        const int spacing = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spacing_spin));
+        push_undo_state();
+        stroke_horizontal_lines(line_count, vertical_offset, spacing);
+        queue_canvas_redraw_after_layer_draw();
+    }
+
+    gtk_widget_destroy(dialog);
+}
+
+void on_layer_draw_vertical_lines(GtkMenuItem* item, gpointer data) {
+    if (!has_active_layer_surface()) return;
+
+    GtkWidget* dialog = gtk_dialog_new_with_buttons(
+        _("Draw Vertical Lines"),
+        GTK_WINDOW(app_state.window),
+        (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
+        _("_Cancel"), GTK_RESPONSE_CANCEL,
+        _("_Draw"), GTK_RESPONSE_OK,
+        NULL
+    );
+
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget* grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
+    gtk_container_add(GTK_CONTAINER(content), grid);
+
+    GtkWidget* count_label = gtk_label_new(_("Number Of Lines:"));
+    GtkWidget* offset_label = gtk_label_new(_("Horizontal Offset:"));
+    GtkWidget* spacing_label = gtk_label_new(_("Spacing:"));
+    gtk_widget_set_halign(count_label, GTK_ALIGN_START);
+    gtk_widget_set_halign(offset_label, GTK_ALIGN_START);
+    gtk_widget_set_halign(spacing_label, GTK_ALIGN_START);
+
+    GtkWidget* count_spin = gtk_spin_button_new_with_range(1, 1000, 1);
+    GtkWidget* offset_spin = gtk_spin_button_new_with_range(0, 10000, 1);
+    GtkWidget* spacing_spin = gtk_spin_button_new_with_range(1, 10000, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(count_spin), 5);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(offset_spin), 10);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spacing_spin), 25);
+
+    GtkWidget* reset_button = gtk_button_new_with_label(_("Reset"));
+
+    gtk_grid_attach(GTK_GRID(grid), count_label, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), count_spin, 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), offset_label, 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), offset_spin, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), spacing_label, 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), spacing_spin, 1, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), reset_button, 0, 3, 2, 1);
+
+    g_object_set_data(G_OBJECT(reset_button), "count-spin", count_spin);
+    g_object_set_data(G_OBJECT(reset_button), "offset-spin", offset_spin);
+    g_object_set_data(G_OBJECT(reset_button), "spacing-spin", spacing_spin);
+    g_signal_connect(reset_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer user_data) {
+        GtkWidget* count_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "count-spin"));
+        GtkWidget* offset_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "offset-spin"));
+        GtkWidget* spacing_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "spacing-spin"));
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(count_spin), 5);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(offset_spin), 10);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(spacing_spin), 25);
+    }), NULL);
+
+    gtk_widget_show_all(dialog);
+    const int response = gtk_dialog_run(GTK_DIALOG(dialog));
+
+    if (response == GTK_RESPONSE_OK && has_active_layer_surface()) {
+        const int line_count = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(count_spin));
+        const int horizontal_offset = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(offset_spin));
+        const int spacing = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spacing_spin));
+        push_undo_state();
+        stroke_vertical_lines(line_count, horizontal_offset, spacing);
+        queue_canvas_redraw_after_layer_draw();
+    }
+
+    gtk_widget_destroy(dialog);
+}
+
+void on_layer_draw_grid(GtkMenuItem* item, gpointer data) {
+    if (!has_active_layer_surface()) return;
+
+    GtkWidget* dialog = gtk_dialog_new_with_buttons(
+        _("Draw Grid"),
+        GTK_WINDOW(app_state.window),
+        (GtkDialogFlags)(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
+        _("_Cancel"), GTK_RESPONSE_CANCEL,
+        _("_Draw"), GTK_RESPONSE_OK,
+        NULL
+    );
+
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget* grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
+    gtk_container_add(GTK_CONTAINER(content), grid);
+
+    GtkWidget* count_label = gtk_label_new(_("Number Of Lines:"));
+    GtkWidget* h_offset_label = gtk_label_new(_("Horizontal Offset:"));
+    GtkWidget* v_offset_label = gtk_label_new(_("Vertical Offset:"));
+    gtk_widget_set_halign(count_label, GTK_ALIGN_START);
+    gtk_widget_set_halign(h_offset_label, GTK_ALIGN_START);
+    gtk_widget_set_halign(v_offset_label, GTK_ALIGN_START);
+
+    GtkWidget* count_spin = gtk_spin_button_new_with_range(1, 1000, 1);
+    GtkWidget* h_offset_spin = gtk_spin_button_new_with_range(0, 10000, 1);
+    GtkWidget* v_offset_spin = gtk_spin_button_new_with_range(0, 10000, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(count_spin), 5);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(h_offset_spin), 10);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(v_offset_spin), 10);
+
+    GtkWidget* reset_button = gtk_button_new_with_label(_("Reset"));
+
+    gtk_grid_attach(GTK_GRID(grid), count_label, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), count_spin, 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), h_offset_label, 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), h_offset_spin, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), v_offset_label, 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), v_offset_spin, 1, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), reset_button, 0, 3, 2, 1);
+
+    g_object_set_data(G_OBJECT(reset_button), "count-spin", count_spin);
+    g_object_set_data(G_OBJECT(reset_button), "h-offset-spin", h_offset_spin);
+    g_object_set_data(G_OBJECT(reset_button), "v-offset-spin", v_offset_spin);
+    g_signal_connect(reset_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer user_data) {
+        GtkWidget* count_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "count-spin"));
+        GtkWidget* h_offset_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "h-offset-spin"));
+        GtkWidget* v_offset_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "v-offset-spin"));
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(count_spin), 5);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(h_offset_spin), 10);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(v_offset_spin), 10);
+    }), NULL);
+
+    gtk_widget_show_all(dialog);
+    const int response = gtk_dialog_run(GTK_DIALOG(dialog));
+
+    if (response == GTK_RESPONSE_OK && has_active_layer_surface()) {
+        const int line_count = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(count_spin));
+        const int horizontal_offset = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(h_offset_spin));
+        const int vertical_offset = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(v_offset_spin));
+
+        const int vertical_spacing = std::max(1, (app_state.canvas_width - horizontal_offset) / std::max(1, line_count));
+        const int horizontal_spacing = std::max(1, (app_state.canvas_height - vertical_offset) / std::max(1, line_count));
+
+        push_undo_state();
+        stroke_vertical_lines(line_count, horizontal_offset, vertical_spacing);
+        stroke_horizontal_lines(line_count, vertical_offset, horizontal_spacing);
+        queue_canvas_redraw_after_layer_draw();
+    }
+
+    gtk_widget_destroy(dialog);
+}
+
 void on_image_scale(GtkMenuItem* item, gpointer data) {
     if (!app_state.surface) return;
 
@@ -4870,17 +5135,27 @@ int main(int argc, char* argv[]) {
     GtkWidget* layer_delete = gtk_menu_item_new_with_label(_("Delete Layer"));
     GtkWidget* layer_color_balance = gtk_menu_item_new_with_label(_("Color Balance"));
     GtkWidget* layer_brightness_contrast = gtk_menu_item_new_with_label(_("Brightness/Contrast"));
+    GtkWidget* layer_draw_horizontal_lines = gtk_menu_item_new_with_label(_("Draw Horizontal Lines"));
+    GtkWidget* layer_draw_vertical_lines = gtk_menu_item_new_with_label(_("Draw Vertical Lines"));
+    GtkWidget* layer_draw_grid = gtk_menu_item_new_with_label(_("Draw Grid"));
 
     g_signal_connect(layer_add, "activate", G_CALLBACK(on_layer_add), NULL);
     g_signal_connect(layer_delete, "activate", G_CALLBACK(on_layer_delete), NULL);
     g_signal_connect(layer_color_balance, "activate", G_CALLBACK(on_layer_color_balance), NULL);
     g_signal_connect(layer_brightness_contrast, "activate", G_CALLBACK(on_layer_brightness_contrast), NULL);
+    g_signal_connect(layer_draw_horizontal_lines, "activate", G_CALLBACK(on_layer_draw_horizontal_lines), NULL);
+    g_signal_connect(layer_draw_vertical_lines, "activate", G_CALLBACK(on_layer_draw_vertical_lines), NULL);
+    g_signal_connect(layer_draw_grid, "activate", G_CALLBACK(on_layer_draw_grid), NULL);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_add);
     gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_delete);
     gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), gtk_separator_menu_item_new());
     gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_color_balance);
     gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_brightness_contrast);
+    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), gtk_separator_menu_item_new());
+    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_draw_horizontal_lines);
+    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_draw_vertical_lines);
+    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_draw_grid);
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(layer_menu_item), layer_menu);
 
     GtkWidget* view_menu = gtk_menu_new();
