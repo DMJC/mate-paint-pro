@@ -76,6 +76,7 @@ void push_undo_state();
 void undo_last_operation();
 void redo_last_operation();
 void draw_canvas_grid_background(cairo_t* cr, double width, double height);
+static void draw_line_pattern_preview_overlay(cairo_t* cr);
 bool is_transparent_color(const GdkRGBA& color);
 bool save_surface_to_file(cairo_surface_t* surface, const std::string& filename);
 void load_custom_palette_colors();
@@ -210,6 +211,16 @@ struct AppState {
     bool show_horizontal_center_guide = false;
     std::vector<double> vertical_guides;
     std::vector<double> horizontal_guides;
+
+    bool show_line_pattern_preview = false;
+    bool preview_show_horizontal_lines = false;
+    bool preview_show_vertical_lines = false;
+    int preview_line_count = 0;
+    int preview_horizontal_offset = 0;
+    int preview_vertical_offset = 0;
+    int preview_horizontal_spacing = 0;
+    int preview_vertical_spacing = 0;
+
     std::string current_filename;
 
     std::vector<UndoSnapshot> undo_stack;
@@ -2548,6 +2559,8 @@ gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer data) {
     for (double x : app_state.vertical_guides) draw_vertical_guide(cr, x);
     for (double y : app_state.horizontal_guides) draw_horizontal_guide(cr, y);
 
+    draw_line_pattern_preview_overlay(cr);
+
     if (app_state.has_selection) {
        draw_selection_overlay(cr);
     }
@@ -3950,6 +3963,123 @@ static void queue_canvas_redraw_after_layer_draw() {
     }
 }
 
+static void clear_line_pattern_preview() {
+    app_state.show_line_pattern_preview = false;
+    app_state.preview_show_horizontal_lines = false;
+    app_state.preview_show_vertical_lines = false;
+    app_state.preview_line_count = 0;
+    app_state.preview_horizontal_offset = 0;
+    app_state.preview_vertical_offset = 0;
+    app_state.preview_horizontal_spacing = 0;
+    app_state.preview_vertical_spacing = 0;
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+static void update_line_pattern_preview(bool show_horizontal, bool show_vertical, int line_count, int horizontal_offset, int vertical_offset, int horizontal_spacing, int vertical_spacing) {
+    app_state.show_line_pattern_preview = true;
+    app_state.preview_show_horizontal_lines = show_horizontal;
+    app_state.preview_show_vertical_lines = show_vertical;
+    app_state.preview_line_count = std::max(0, line_count);
+    app_state.preview_horizontal_offset = std::max(0, horizontal_offset);
+    app_state.preview_vertical_offset = std::max(0, vertical_offset);
+    app_state.preview_horizontal_spacing = std::max(1, horizontal_spacing);
+    app_state.preview_vertical_spacing = std::max(1, vertical_spacing);
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+static void update_horizontal_lines_preview_from_button(GtkWidget* button) {
+    GtkWidget* count_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "count-spin"));
+    GtkWidget* offset_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "offset-spin"));
+    GtkWidget* spacing_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "spacing-spin"));
+    update_line_pattern_preview(
+        true,
+        false,
+        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(count_spin)),
+        0,
+        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(offset_spin)),
+        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spacing_spin)),
+        1
+    );
+}
+
+static void update_vertical_lines_preview_from_button(GtkWidget* button) {
+    GtkWidget* count_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "count-spin"));
+    GtkWidget* offset_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "offset-spin"));
+    GtkWidget* spacing_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "spacing-spin"));
+    update_line_pattern_preview(
+        false,
+        true,
+        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(count_spin)),
+        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(offset_spin)),
+        0,
+        1,
+        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spacing_spin))
+    );
+}
+
+static void update_grid_preview_from_button(GtkWidget* button) {
+    GtkWidget* count_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "count-spin"));
+    GtkWidget* h_offset_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "h-offset-spin"));
+    GtkWidget* v_offset_spin = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "v-offset-spin"));
+
+    const int line_count = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(count_spin));
+    const int horizontal_offset = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(h_offset_spin));
+    const int vertical_offset = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(v_offset_spin));
+    const int vertical_spacing = std::max(1, (app_state.canvas_width - horizontal_offset) / std::max(1, line_count));
+    const int horizontal_spacing = std::max(1, (app_state.canvas_height - vertical_offset) / std::max(1, line_count));
+
+    update_line_pattern_preview(
+        true,
+        true,
+        line_count,
+        horizontal_offset,
+        vertical_offset,
+        horizontal_spacing,
+        vertical_spacing
+    );
+}
+
+static void draw_line_pattern_preview_overlay(cairo_t* cr) {
+    if (!app_state.show_line_pattern_preview || app_state.preview_line_count <= 0) {
+        return;
+    }
+
+    cairo_save(cr);
+    cairo_set_source_rgba(
+        cr,
+        app_state.fg_color.red,
+        app_state.fg_color.green,
+        app_state.fg_color.blue,
+        std::max(0.25, app_state.fg_color.alpha)
+    );
+    cairo_set_line_width(cr, app_state.line_width);
+
+    if (app_state.preview_show_horizontal_lines) {
+        for (int i = 0; i < app_state.preview_line_count; ++i) {
+            const double y = app_state.preview_vertical_offset + (i * app_state.preview_horizontal_spacing);
+            if (y < 0.0 || y > app_state.canvas_height) continue;
+            cairo_move_to(cr, 0.0, y);
+            cairo_line_to(cr, app_state.canvas_width, y);
+        }
+    }
+
+    if (app_state.preview_show_vertical_lines) {
+        for (int i = 0; i < app_state.preview_line_count; ++i) {
+            const double x = app_state.preview_horizontal_offset + (i * app_state.preview_vertical_spacing);
+            if (x < 0.0 || x > app_state.canvas_width) continue;
+            cairo_move_to(cr, x, 0.0);
+            cairo_line_to(cr, x, app_state.canvas_height);
+        }
+    }
+
+    cairo_stroke(cr);
+    cairo_restore(cr);
+}
+
 void on_layer_draw_horizontal_lines(GtkMenuItem* item, gpointer data) {
     if (!has_active_layer_surface()) return;
 
@@ -4005,6 +4135,17 @@ void on_layer_draw_horizontal_lines(GtkMenuItem* item, gpointer data) {
         gtk_spin_button_set_value(GTK_SPIN_BUTTON(spacing_spin), 25);
     }), NULL);
 
+    g_signal_connect(count_spin, "value-changed", G_CALLBACK(+[](GtkSpinButton* spin, gpointer user_data) {
+        update_horizontal_lines_preview_from_button(GTK_WIDGET(user_data));
+    }), reset_button);
+    g_signal_connect(offset_spin, "value-changed", G_CALLBACK(+[](GtkSpinButton* spin, gpointer user_data) {
+        update_horizontal_lines_preview_from_button(GTK_WIDGET(user_data));
+    }), reset_button);
+    g_signal_connect(spacing_spin, "value-changed", G_CALLBACK(+[](GtkSpinButton* spin, gpointer user_data) {
+        update_horizontal_lines_preview_from_button(GTK_WIDGET(user_data));
+    }), reset_button);
+
+    update_horizontal_lines_preview_from_button(reset_button);
     gtk_widget_show_all(dialog);
     const int response = gtk_dialog_run(GTK_DIALOG(dialog));
 
@@ -4017,6 +4158,7 @@ void on_layer_draw_horizontal_lines(GtkMenuItem* item, gpointer data) {
         queue_canvas_redraw_after_layer_draw();
     }
 
+    clear_line_pattern_preview();
     gtk_widget_destroy(dialog);
 }
 
@@ -4075,6 +4217,17 @@ void on_layer_draw_vertical_lines(GtkMenuItem* item, gpointer data) {
         gtk_spin_button_set_value(GTK_SPIN_BUTTON(spacing_spin), 25);
     }), NULL);
 
+    g_signal_connect(count_spin, "value-changed", G_CALLBACK(+[](GtkSpinButton* spin, gpointer user_data) {
+        update_vertical_lines_preview_from_button(GTK_WIDGET(user_data));
+    }), reset_button);
+    g_signal_connect(offset_spin, "value-changed", G_CALLBACK(+[](GtkSpinButton* spin, gpointer user_data) {
+        update_vertical_lines_preview_from_button(GTK_WIDGET(user_data));
+    }), reset_button);
+    g_signal_connect(spacing_spin, "value-changed", G_CALLBACK(+[](GtkSpinButton* spin, gpointer user_data) {
+        update_vertical_lines_preview_from_button(GTK_WIDGET(user_data));
+    }), reset_button);
+
+    update_vertical_lines_preview_from_button(reset_button);
     gtk_widget_show_all(dialog);
     const int response = gtk_dialog_run(GTK_DIALOG(dialog));
 
@@ -4087,6 +4240,7 @@ void on_layer_draw_vertical_lines(GtkMenuItem* item, gpointer data) {
         queue_canvas_redraw_after_layer_draw();
     }
 
+    clear_line_pattern_preview();
     gtk_widget_destroy(dialog);
 }
 
@@ -4145,6 +4299,17 @@ void on_layer_draw_grid(GtkMenuItem* item, gpointer data) {
         gtk_spin_button_set_value(GTK_SPIN_BUTTON(v_offset_spin), 10);
     }), NULL);
 
+    g_signal_connect(count_spin, "value-changed", G_CALLBACK(+[](GtkSpinButton* spin, gpointer user_data) {
+        update_grid_preview_from_button(GTK_WIDGET(user_data));
+    }), reset_button);
+    g_signal_connect(h_offset_spin, "value-changed", G_CALLBACK(+[](GtkSpinButton* spin, gpointer user_data) {
+        update_grid_preview_from_button(GTK_WIDGET(user_data));
+    }), reset_button);
+    g_signal_connect(v_offset_spin, "value-changed", G_CALLBACK(+[](GtkSpinButton* spin, gpointer user_data) {
+        update_grid_preview_from_button(GTK_WIDGET(user_data));
+    }), reset_button);
+
+    update_grid_preview_from_button(reset_button);
     gtk_widget_show_all(dialog);
     const int response = gtk_dialog_run(GTK_DIALOG(dialog));
 
@@ -4162,6 +4327,7 @@ void on_layer_draw_grid(GtkMenuItem* item, gpointer data) {
         queue_canvas_redraw_after_layer_draw();
     }
 
+    clear_line_pattern_preview();
     gtk_widget_destroy(dialog);
 }
 
