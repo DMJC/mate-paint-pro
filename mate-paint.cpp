@@ -3587,6 +3587,125 @@ void on_edit_redo(GtkMenuItem* item, gpointer data) {
     redo_last_operation();
 }
 
+struct ColorBalanceWindowState {
+    cairo_surface_t* original_surface = nullptr;
+    GtkWidget* red_scale = nullptr;
+    GtkWidget* green_scale = nullptr;
+    GtkWidget* blue_scale = nullptr;
+    int layer_index = -1;
+    bool undo_pushed = false;
+};
+
+void apply_color_balance_from_original(ColorBalanceWindowState* state) {
+    if (!state || state->layer_index < 0 || state->layer_index >= (int)app_state.layers.size()) {
+        return;
+    }
+    cairo_surface_t* target_surface = app_state.layers[state->layer_index].surface;
+    if (!state->original_surface || !target_surface) {
+        return;
+    }
+
+    if (!state->undo_pushed) {
+        push_undo_state();
+        state->undo_pushed = true;
+    }
+
+    const double red_factor = 1.0 + (gtk_range_get_value(GTK_RANGE(state->red_scale)) / 100.0);
+    const double green_factor = 1.0 + (gtk_range_get_value(GTK_RANGE(state->green_scale)) / 100.0);
+    const double blue_factor = 1.0 + (gtk_range_get_value(GTK_RANGE(state->blue_scale)) / 100.0);
+
+    cairo_surface_flush(state->original_surface);
+    cairo_surface_flush(target_surface);
+
+    unsigned char* source_data = cairo_image_surface_get_data(state->original_surface);
+    unsigned char* target_data = cairo_image_surface_get_data(target_surface);
+    const int stride = cairo_image_surface_get_stride(target_surface);
+
+    for (int y = 0; y < app_state.canvas_height; ++y) {
+        guint32* source_row = reinterpret_cast<guint32*>(source_data + y * stride);
+        guint32* target_row = reinterpret_cast<guint32*>(target_data + y * stride);
+        for (int x = 0; x < app_state.canvas_width; ++x) {
+            GdkRGBA color = pixel_to_rgba(source_row[x]);
+            color.red = clamp_color_channel(color.red * red_factor);
+            color.green = clamp_color_channel(color.green * green_factor);
+            color.blue = clamp_color_channel(color.blue * blue_factor);
+            target_row[x] = rgba_to_pixel(color);
+        }
+    }
+
+    cairo_surface_mark_dirty(target_surface);
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+void on_layer_color_balance(GtkMenuItem* item, gpointer data) {
+    if (app_state.layers.empty() || app_state.active_layer_index < 0 || app_state.active_layer_index >= (int)app_state.layers.size()) {
+        return;
+    }
+
+    GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(window), _("Color Balance"));
+    gtk_window_set_transient_for(GTK_WINDOW(window), GTK_WINDOW(app_state.window));
+    gtk_window_set_default_size(GTK_WINDOW(window), 320, -1);
+
+    GtkWidget* content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(content), 10);
+    gtk_container_add(GTK_CONTAINER(window), content);
+
+    ColorBalanceWindowState* state = new ColorBalanceWindowState();
+    state->layer_index = app_state.active_layer_index;
+    state->original_surface = cairo_surface_reference(app_state.layers[state->layer_index].surface);
+
+    auto add_slider_row = [&](const char* label_text, GtkWidget** out_scale) {
+        GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget* label = gtk_label_new(label_text);
+        gtk_widget_set_halign(label, GTK_ALIGN_START);
+        GtkWidget* scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -100.0, 100.0, 1.0);
+        gtk_scale_set_draw_value(GTK_SCALE(scale), TRUE);
+        gtk_range_set_value(GTK_RANGE(scale), 0.0);
+        gtk_widget_set_hexpand(scale, TRUE);
+
+        gtk_box_pack_start(GTK_BOX(row), label, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(row), scale, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(content), row, FALSE, FALSE, 0);
+        *out_scale = scale;
+    };
+
+    add_slider_row(_("Red"), &state->red_scale);
+    add_slider_row(_("Green"), &state->green_scale);
+    add_slider_row(_("Blue"), &state->blue_scale);
+
+    g_signal_connect(state->red_scale, "value-changed", G_CALLBACK(+[](GtkRange* range, gpointer user_data) {
+        apply_color_balance_from_original(static_cast<ColorBalanceWindowState*>(user_data));
+    }), state);
+    g_signal_connect(state->green_scale, "value-changed", G_CALLBACK(+[](GtkRange* range, gpointer user_data) {
+        apply_color_balance_from_original(static_cast<ColorBalanceWindowState*>(user_data));
+    }), state);
+    g_signal_connect(state->blue_scale, "value-changed", G_CALLBACK(+[](GtkRange* range, gpointer user_data) {
+        apply_color_balance_from_original(static_cast<ColorBalanceWindowState*>(user_data));
+    }), state);
+
+    g_signal_connect(window, "destroy", G_CALLBACK(+[](GtkWidget* widget, gpointer user_data) {
+        ColorBalanceWindowState* state = static_cast<ColorBalanceWindowState*>(user_data);
+        if (state->original_surface) {
+            cairo_surface_destroy(state->original_surface);
+            state->original_surface = nullptr;
+        }
+        delete state;
+    }), state);
+
+    gtk_widget_show_all(window);
+}
+
+void on_layer_add(GtkMenuItem* item, gpointer data) {
+    add_new_layer();
+}
+
+void on_layer_delete(GtkMenuItem* item, gpointer data) {
+    delete_layer(app_state.active_layer_index);
+}
+
 void on_image_scale(GtkMenuItem* item, gpointer data) {
     if (!app_state.surface) return;
 
@@ -4551,6 +4670,22 @@ int main(int argc, char* argv[]) {
     gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), edit_paste);
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(edit_menu_item), edit_menu);
 
+    GtkWidget* layer_menu = gtk_menu_new();
+    GtkWidget* layer_menu_item = gtk_menu_item_new_with_label(_("Layer"));
+    GtkWidget* layer_add = gtk_menu_item_new_with_label(_("New Layer"));
+    GtkWidget* layer_delete = gtk_menu_item_new_with_label(_("Delete Layer"));
+    GtkWidget* layer_color_balance = gtk_menu_item_new_with_label(_("Color Balance"));
+
+    g_signal_connect(layer_add, "activate", G_CALLBACK(on_layer_add), NULL);
+    g_signal_connect(layer_delete, "activate", G_CALLBACK(on_layer_delete), NULL);
+    g_signal_connect(layer_color_balance, "activate", G_CALLBACK(on_layer_color_balance), NULL);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_add);
+    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_delete);
+    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), gtk_separator_menu_item_new());
+    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_color_balance);
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(layer_menu_item), layer_menu);
+
     GtkWidget* view_menu = gtk_menu_new();
     GtkWidget* view_menu_item = gtk_menu_item_new_with_label(_("View"));
     GtkWidget* view_vertical_center = gtk_check_menu_item_new_with_label(_("View Vertical Center Guide"));
@@ -4608,6 +4743,7 @@ int main(int argc, char* argv[]) {
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(help_menu_item), help_menu);
     
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), edit_menu_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), layer_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), view_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), image_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), help_menu_item);
