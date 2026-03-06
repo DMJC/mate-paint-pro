@@ -3619,17 +3619,42 @@ void apply_color_balance_from_original(ColorBalanceWindowState* state) {
 
     unsigned char* source_data = cairo_image_surface_get_data(state->original_surface);
     unsigned char* target_data = cairo_image_surface_get_data(target_surface);
-    const int stride = cairo_image_surface_get_stride(target_surface);
+    const int source_stride = cairo_image_surface_get_stride(state->original_surface);
+    const int target_stride = cairo_image_surface_get_stride(target_surface);
 
     for (int y = 0; y < app_state.canvas_height; ++y) {
-        guint32* source_row = reinterpret_cast<guint32*>(source_data + y * stride);
-        guint32* target_row = reinterpret_cast<guint32*>(target_data + y * stride);
+        guint32* source_row = reinterpret_cast<guint32*>(source_data + y * source_stride);
+        guint32* target_row = reinterpret_cast<guint32*>(target_data + y * target_stride);
         for (int x = 0; x < app_state.canvas_width; ++x) {
-            GdkRGBA color = pixel_to_rgba(source_row[x]);
-            color.red = clamp_color_channel(color.red * red_factor);
-            color.green = clamp_color_channel(color.green * green_factor);
-            color.blue = clamp_color_channel(color.blue * blue_factor);
-            target_row[x] = rgba_to_pixel(color);
+            const guint32 pixel = source_row[x];
+            const guint8 alpha = (pixel >> 24) & 0xFF;
+            const guint8 premul_red = (pixel >> 16) & 0xFF;
+            const guint8 premul_green = (pixel >> 8) & 0xFF;
+            const guint8 premul_blue = pixel & 0xFF;
+
+            double red = 0.0;
+            double green = 0.0;
+            double blue = 0.0;
+            if (alpha > 0) {
+                const double alpha_factor = 255.0 / static_cast<double>(alpha);
+                red = std::min(255.0, premul_red * alpha_factor);
+                green = std::min(255.0, premul_green * alpha_factor);
+                blue = std::min(255.0, premul_blue * alpha_factor);
+            }
+
+            red = clamp_double(red * red_factor, 0.0, 255.0);
+            green = clamp_double(green * green_factor, 0.0, 255.0);
+            blue = clamp_double(blue * blue_factor, 0.0, 255.0);
+
+            const double premul_scale = static_cast<double>(alpha) / 255.0;
+            const guint8 out_red = static_cast<guint8>(std::lround(red * premul_scale));
+            const guint8 out_green = static_cast<guint8>(std::lround(green * premul_scale));
+            const guint8 out_blue = static_cast<guint8>(std::lround(blue * premul_scale));
+
+            target_row[x] = (static_cast<guint32>(alpha) << 24) |
+                            (static_cast<guint32>(out_red) << 16) |
+                            (static_cast<guint32>(out_green) << 8) |
+                            static_cast<guint32>(out_blue);
         }
     }
 
@@ -3655,7 +3680,16 @@ void on_layer_color_balance(GtkMenuItem* item, gpointer data) {
 
     ColorBalanceWindowState* state = new ColorBalanceWindowState();
     state->layer_index = app_state.active_layer_index;
-    state->original_surface = cairo_surface_reference(app_state.layers[state->layer_index].surface);
+    state->original_surface = clone_surface(
+        app_state.layers[state->layer_index].surface,
+        app_state.canvas_width,
+        app_state.canvas_height
+    );
+    if (!state->original_surface) {
+        delete state;
+        gtk_widget_destroy(window);
+        return;
+    }
 
     auto add_slider_row = [&](const char* label_text, GtkWidget** out_scale) {
         GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
