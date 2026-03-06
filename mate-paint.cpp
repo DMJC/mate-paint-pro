@@ -5301,28 +5301,32 @@ int main(int argc, char* argv[]) {
     GtkWidget* layer_delete = gtk_menu_item_new_with_label(_("Delete Layer"));
     GtkWidget* layer_color_balance = gtk_menu_item_new_with_label(_("Color Balance"));
     GtkWidget* layer_brightness_contrast = gtk_menu_item_new_with_label(_("Brightness/Contrast"));
-    GtkWidget* layer_draw_horizontal_lines = gtk_menu_item_new_with_label(_("Draw Horizontal Lines"));
-    GtkWidget* layer_draw_vertical_lines = gtk_menu_item_new_with_label(_("Draw Vertical Lines"));
-    GtkWidget* layer_draw_grid = gtk_menu_item_new_with_label(_("Draw Grid"));
+
+    GtkWidget* draw_menu = gtk_menu_new();
+    GtkWidget* draw_menu_item = gtk_menu_item_new_with_label(_("Draw"));
+    GtkWidget* draw_horizontal_lines = gtk_menu_item_new_with_label(_("Draw Horizontal Lines"));
+    GtkWidget* draw_vertical_lines = gtk_menu_item_new_with_label(_("Draw Vertical Lines"));
+    GtkWidget* draw_grid = gtk_menu_item_new_with_label(_("Draw Grid"));
 
     g_signal_connect(layer_add, "activate", G_CALLBACK(on_layer_add), NULL);
     g_signal_connect(layer_delete, "activate", G_CALLBACK(on_layer_delete), NULL);
     g_signal_connect(layer_color_balance, "activate", G_CALLBACK(on_layer_color_balance), NULL);
     g_signal_connect(layer_brightness_contrast, "activate", G_CALLBACK(on_layer_brightness_contrast), NULL);
-    g_signal_connect(layer_draw_horizontal_lines, "activate", G_CALLBACK(on_layer_draw_horizontal_lines), NULL);
-    g_signal_connect(layer_draw_vertical_lines, "activate", G_CALLBACK(on_layer_draw_vertical_lines), NULL);
-    g_signal_connect(layer_draw_grid, "activate", G_CALLBACK(on_layer_draw_grid), NULL);
+    g_signal_connect(draw_horizontal_lines, "activate", G_CALLBACK(on_layer_draw_horizontal_lines), NULL);
+    g_signal_connect(draw_vertical_lines, "activate", G_CALLBACK(on_layer_draw_vertical_lines), NULL);
+    g_signal_connect(draw_grid, "activate", G_CALLBACK(on_layer_draw_grid), NULL);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_add);
     gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_delete);
     gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), gtk_separator_menu_item_new());
     gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_color_balance);
     gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_brightness_contrast);
-    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), gtk_separator_menu_item_new());
-    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_draw_horizontal_lines);
-    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_draw_vertical_lines);
-    gtk_menu_shell_append(GTK_MENU_SHELL(layer_menu), layer_draw_grid);
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(layer_menu_item), layer_menu);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(draw_menu), draw_horizontal_lines);
+    gtk_menu_shell_append(GTK_MENU_SHELL(draw_menu), draw_vertical_lines);
+    gtk_menu_shell_append(GTK_MENU_SHELL(draw_menu), draw_grid);
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(draw_menu_item), draw_menu);
 
     GtkWidget* view_menu = gtk_menu_new();
     GtkWidget* view_menu_item = gtk_menu_item_new_with_label(_("View"));
@@ -5382,6 +5386,7 @@ int main(int argc, char* argv[]) {
     
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), edit_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), layer_menu_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), draw_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), view_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), image_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), help_menu_item);
