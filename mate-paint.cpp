@@ -86,6 +86,7 @@ void add_new_layer();
 void delete_layer(int index);
 void move_layer_up(int index);
 void move_layer_down(int index);
+void merge_layer_down(int index);
 void sync_layer_controls();
 bool ask_regular_polygon_sides(GtkWidget* parent);
 void build_regular_polygon_points(double start_x, double start_y, double end_x, double end_y, bool from_center, bool uniform, int sides, std::vector<std::pair<double, double>>& points);
@@ -202,6 +203,7 @@ struct AppState {
     GtkWidget* layer_list_box = nullptr;
     GtkWidget* layer_panel = nullptr;
     GtkWidget* add_layer_button = nullptr;
+    GtkWidget* merge_layer_button = nullptr;
     GtkWidget* layer_move_up_button = nullptr;
     GtkWidget* layer_move_down_button = nullptr;
     GtkWidget* layer_opacity_scale = nullptr;
@@ -1390,6 +1392,9 @@ void sync_layer_controls() {
     if (app_state.layer_move_down_button) {
         gtk_widget_set_sensitive(app_state.layer_move_down_button, app_state.active_layer_index > 0);
     }
+    if (app_state.merge_layer_button) {
+        gtk_widget_set_sensitive(app_state.merge_layer_button, app_state.active_layer_index > 0 && app_state.layers.size() > 1);
+    }
     if (app_state.layer_opacity_scale) {
         gtk_range_set_value(GTK_RANGE(app_state.layer_opacity_scale), app_state.layers[app_state.active_layer_index].opacity);
     }
@@ -1458,6 +1463,36 @@ void move_layer_down(int index) {
     std::swap(app_state.layers[index], app_state.layers[index - 1]);
     app_state.active_layer_index = index - 1;
     app_state.surface = app_state.layers[app_state.active_layer_index].surface;
+    rebuild_layer_panel();
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+void merge_layer_down(int index) {
+    if (index <= 0 || index >= (int)app_state.layers.size()) {
+        return;
+    }
+
+    Layer& source_layer = app_state.layers[index];
+    Layer& target_layer = app_state.layers[index - 1];
+    if (!source_layer.surface || !target_layer.surface) {
+        return;
+    }
+
+    cairo_t* cr = cairo_create(target_layer.surface);
+    cairo_set_source_surface(cr, source_layer.surface, 0, 0);
+    cairo_paint_with_alpha(cr, source_layer.opacity);
+    cairo_destroy(cr);
+
+    cairo_surface_destroy(source_layer.surface);
+    source_layer.surface = nullptr;
+    app_state.layers[index - 1].opacity = 1.0;
+    app_state.layers.erase(app_state.layers.begin() + index);
+
+    app_state.active_layer_index = index - 1;
+    app_state.surface = app_state.layers[app_state.active_layer_index].surface;
+
     rebuild_layer_panel();
     if (app_state.drawing_area) {
         gtk_widget_queue_draw(app_state.drawing_area);
@@ -5143,11 +5178,19 @@ int main(int argc, char* argv[]) {
 
     app_state.layer_list_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_box_pack_start(GTK_BOX(app_state.layer_panel), app_state.layer_list_box, FALSE, FALSE, 0);
+    GtkWidget* layer_action_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     app_state.add_layer_button = gtk_button_new_with_label(_("+ Add a Layer"));
     g_signal_connect(app_state.add_layer_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
         add_new_layer();
     }), NULL);
-    gtk_box_pack_start(GTK_BOX(app_state.layer_panel), app_state.add_layer_button, FALSE, FALSE, 0);
+    app_state.merge_layer_button = gtk_button_new_with_label(_("Merge Down"));
+    gtk_widget_set_tooltip_text(app_state.merge_layer_button, _("Merge the selected layer into the layer below"));
+    g_signal_connect(app_state.merge_layer_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+        merge_layer_down(app_state.active_layer_index);
+    }), NULL);
+    gtk_box_pack_start(GTK_BOX(layer_action_row), app_state.add_layer_button, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(layer_action_row), app_state.merge_layer_button, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(app_state.layer_panel), layer_action_row, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(content_box), app_state.layer_panel, FALSE, FALSE, 0);
      
     GtkWidget* bottom_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
