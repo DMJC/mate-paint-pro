@@ -30,6 +30,8 @@ const double zoom_options[] = {1.0, 2.0, 4.0, 6.0, 8.0};
 enum Tool {
     TOOL_LASSO_SELECT,
     TOOL_RECT_SELECT,
+    TOOL_SELECT_BY_COLOR,
+    TOOL_FUZZY_SELECT,
     TOOL_ERASER,
     TOOL_FILL,
     TOOL_GRADIENT_FILL,
@@ -159,6 +161,8 @@ struct AppState {
     double selection_x2 = 0;
     double selection_y2 = 0;
     std::vector<std::pair<double, double>> selection_path;
+    std::vector<bool> selection_mask;
+    bool selection_has_mask = false;
     cairo_surface_t* floating_surface = nullptr;
     bool floating_selection_active = false;
     bool dragging_selection = false;
@@ -366,6 +370,11 @@ bool tool_needs_preview(Tool tool) {
            tool == TOOL_RECTANGLE || tool == TOOL_POLYGON ||
            tool == TOOL_ELLIPSE || tool == TOOL_REGULAR_POLYGON || tool == TOOL_STAR ||
            tool == TOOL_ROUNDED_RECT || tool == TOOL_GRADIENT_FILL;
+}
+
+bool tool_is_selection_tool(Tool tool) {
+    return tool == TOOL_LASSO_SELECT || tool == TOOL_RECT_SELECT ||
+           tool == TOOL_SELECT_BY_COLOR || tool == TOOL_FUZZY_SELECT;
 }
 
 int tool_to_index(Tool tool) {
@@ -749,6 +758,8 @@ void clear_selection() {
     app_state.floating_drag_completed = false;
     app_state.has_selection = false;
     app_state.selection_path.clear();
+    app_state.selection_mask.clear();
+    app_state.selection_has_mask = false;
     app_state.drag_undo_snapshot_taken = false;
     if (app_state.drawing_area) {
         gtk_widget_queue_draw(app_state.drawing_area);
@@ -801,6 +812,8 @@ void finalize_lasso_selection() {
     app_state.has_selection = true;
     app_state.selection_is_rect = false;
     app_state.floating_selection_active = false;
+    app_state.selection_has_mask = false;
+    app_state.selection_mask.clear();
     app_state.selection_path = app_state.lasso_points;
     app_state.lasso_points.clear();
 
@@ -1026,6 +1039,8 @@ void paste_selection() {
     app_state.has_selection = true;
     app_state.selection_is_rect = true;
     app_state.selection_path.clear();
+    app_state.selection_has_mask = false;
+    app_state.selection_mask.clear();
     app_state.selection_x1 = paste_x;
     app_state.selection_y1 = paste_y;
     app_state.selection_x2 = paste_x + app_state.clipboard_width;
@@ -1933,6 +1948,107 @@ void gradient_fill_at(int start_x, int start_y, int end_x, int end_y, bool circu
     cairo_surface_mark_dirty(app_state.surface);
 }
 
+bool pixel_matches_with_tolerance(guint32 pixel, guint32 target, int tolerance) {
+    int pixel_a = (pixel >> 24) & 0xFF;
+    int pixel_r = (pixel >> 16) & 0xFF;
+    int pixel_g = (pixel >> 8) & 0xFF;
+    int pixel_b = pixel & 0xFF;
+
+    int target_a = (target >> 24) & 0xFF;
+    int target_r = (target >> 16) & 0xFF;
+    int target_g = (target >> 8) & 0xFF;
+    int target_b = target & 0xFF;
+
+    return std::abs(pixel_a - target_a) <= tolerance &&
+           std::abs(pixel_r - target_r) <= tolerance &&
+           std::abs(pixel_g - target_g) <= tolerance &&
+           std::abs(pixel_b - target_b) <= tolerance;
+}
+
+bool select_pixels_by_color(int start_x, int start_y, bool contiguous_only, int tolerance) {
+    if (!point_in_canvas(start_x, start_y) || !app_state.surface) return false;
+
+    cairo_surface_flush(app_state.surface);
+    unsigned char* data = cairo_image_surface_get_data(app_state.surface);
+    int stride = cairo_image_surface_get_stride(app_state.surface);
+    guint32 target = read_pixel(start_x, start_y);
+
+    bool found = false;
+    int min_x = app_state.canvas_width;
+    int min_y = app_state.canvas_height;
+    int max_x = 0;
+    int max_y = 0;
+
+    std::vector<bool> selection_mask(app_state.canvas_width * app_state.canvas_height, false);
+
+    if (contiguous_only) {
+        std::queue<std::pair<int, int>> pixels;
+        std::vector<bool> visited(app_state.canvas_width * app_state.canvas_height, false);
+        pixels.push({start_x, start_y});
+        visited[start_y * app_state.canvas_width + start_x] = true;
+
+        while (!pixels.empty()) {
+            std::pair<int, int> current = pixels.front();
+            pixels.pop();
+
+            int x = current.first;
+            int y = current.second;
+            guint32* row = reinterpret_cast<guint32*>(data + y * stride);
+            if (!pixel_matches_with_tolerance(row[x], target, tolerance)) continue;
+
+            found = true;
+            selection_mask[y * app_state.canvas_width + x] = true;
+            min_x = std::min(min_x, x);
+            min_y = std::min(min_y, y);
+            max_x = std::max(max_x, x);
+            max_y = std::max(max_y, y);
+
+            const int neighbors[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+            for (const auto& neighbor : neighbors) {
+                int nx = x + neighbor[0];
+                int ny = y + neighbor[1];
+                if (!point_in_canvas(nx, ny)) continue;
+
+                int index = ny * app_state.canvas_width + nx;
+                if (visited[index]) continue;
+                visited[index] = true;
+                pixels.push({nx, ny});
+            }
+        }
+    } else {
+        for (int y = 0; y < app_state.canvas_height; y++) {
+            guint32* row = reinterpret_cast<guint32*>(data + y * stride);
+            for (int x = 0; x < app_state.canvas_width; x++) {
+                if (!pixel_matches_with_tolerance(row[x], target, tolerance)) continue;
+                found = true;
+                selection_mask[y * app_state.canvas_width + x] = true;
+                min_x = std::min(min_x, x);
+                min_y = std::min(min_y, y);
+                max_x = std::max(max_x, x);
+                max_y = std::max(max_y, y);
+            }
+        }
+    }
+
+    if (!found) {
+        clear_selection();
+        return false;
+    }
+
+    app_state.has_selection = true;
+    app_state.selection_is_rect = true;
+    app_state.floating_selection_active = false;
+    app_state.selection_path.clear();
+    app_state.selection_mask = std::move(selection_mask);
+    app_state.selection_has_mask = true;
+    app_state.selection_x1 = min_x;
+    app_state.selection_y1 = min_y;
+    app_state.selection_x2 = max_x + 1;
+    app_state.selection_y2 = max_y + 1;
+    start_ant_animation();
+    return true;
+}
+
 // Drawing functions for each tool
 void draw_line(cairo_t* cr, double x1, double y1, double x2, double y2) {
     GdkRGBA color = get_active_color();
@@ -2231,7 +2347,39 @@ void draw_selection_overlay(cairo_t* cr) {
     
     draw_ant_path(cr);
     
-    if (app_state.selection_is_rect) {
+    if (app_state.selection_has_mask && !app_state.selection_mask.empty()) {
+        int width = app_state.canvas_width;
+        int height = app_state.canvas_height;
+
+        auto selected_at = [&](int x, int y) -> bool {
+            if (x < 0 || y < 0 || x >= width || y >= height) return false;
+            return app_state.selection_mask[y * width + x];
+        };
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                if (!selected_at(x, y)) continue;
+
+                if (!selected_at(x, y - 1)) {
+                    cairo_move_to(cr, x, y);
+                    cairo_line_to(cr, x + 1, y);
+                }
+                if (!selected_at(x + 1, y)) {
+                    cairo_move_to(cr, x + 1, y);
+                    cairo_line_to(cr, x + 1, y + 1);
+                }
+                if (!selected_at(x, y + 1)) {
+                    cairo_move_to(cr, x, y + 1);
+                    cairo_line_to(cr, x + 1, y + 1);
+                }
+                if (!selected_at(x - 1, y)) {
+                    cairo_move_to(cr, x, y);
+                    cairo_line_to(cr, x, y + 1);
+                }
+            }
+        }
+        cairo_stroke(cr);
+    } else if (app_state.selection_is_rect) {
         double x1 = fmin(app_state.selection_x1, app_state.selection_x2);
         double y1 = fmin(app_state.selection_y1, app_state.selection_y2);
         double x2 = fmax(app_state.selection_x1, app_state.selection_x2);
@@ -2797,7 +2945,7 @@ gboolean on_button_press(GtkWidget* widget, GdkEventButton* event, gpointer data
             return TRUE;
         }
 
-        if ((app_state.current_tool == TOOL_RECT_SELECT || app_state.current_tool == TOOL_LASSO_SELECT) &&
+        if (tool_is_selection_tool(app_state.current_tool) &&
             app_state.has_selection && point_in_selection(canvas_x, canvas_y)) {
             start_selection_drag();
             if (app_state.floating_selection_active) {
@@ -2830,6 +2978,16 @@ gboolean on_button_press(GtkWidget* widget, GdkEventButton* event, gpointer data
             push_undo_state();
             flood_fill_at(static_cast<int>(canvas_x), static_cast<int>(canvas_y));
             gtk_widget_queue_draw(widget);
+            return TRUE;
+        }
+
+        if (app_state.current_tool == TOOL_SELECT_BY_COLOR || app_state.current_tool == TOOL_FUZZY_SELECT) {
+            if (event->button == 1) {
+                bool contiguous_only = app_state.current_tool == TOOL_FUZZY_SELECT;
+                int tolerance = contiguous_only ? 32 : 0;
+                select_pixels_by_color(static_cast<int>(canvas_x), static_cast<int>(canvas_y), contiguous_only, tolerance);
+                gtk_widget_queue_draw(widget);
+            }
             return TRUE;
         }
 
@@ -3298,6 +3456,8 @@ gboolean on_button_release(GtkWidget* widget, GdkEventButton* event, gpointer da
                 app_state.has_selection = true;
                 app_state.selection_is_rect = true;
                 app_state.floating_selection_active = false;
+                app_state.selection_has_mask = false;
+                app_state.selection_mask.clear();
                 app_state.selection_x1 = app_state.start_x;
                 app_state.selection_y1 = app_state.start_y;
                 app_state.selection_x2 = end_x;
@@ -4976,6 +5136,8 @@ void on_image_rotate_clockwise(GtkMenuItem* item, gpointer data) {
 
         app_state.selection_is_rect = true;
         app_state.selection_path.clear();
+        app_state.selection_has_mask = false;
+        app_state.selection_mask.clear();
         app_state.selection_x1 = bounds.x;
         app_state.selection_y1 = bounds.y;
         app_state.selection_x2 = bounds.x + new_width;
@@ -5051,6 +5213,8 @@ void on_image_rotate_counter_clockwise(GtkMenuItem* item, gpointer data) {
 
         app_state.selection_is_rect = true;
         app_state.selection_path.clear();
+        app_state.selection_has_mask = false;
+        app_state.selection_mask.clear();
         app_state.selection_x1 = bounds.x;
         app_state.selection_y1 = bounds.y;
         app_state.selection_x2 = bounds.x + new_width;
@@ -5124,6 +5288,8 @@ void on_image_flip_horizontal(GtkMenuItem* item, gpointer data) {
 
         app_state.selection_is_rect = true;
         app_state.selection_path.clear();
+        app_state.selection_has_mask = false;
+        app_state.selection_mask.clear();
 
         gtk_widget_queue_draw(app_state.drawing_area);
         return;
@@ -5188,6 +5354,8 @@ void on_image_flip_vertical(GtkMenuItem* item, gpointer data) {
 
         app_state.selection_is_rect = true;
         app_state.selection_path.clear();
+        app_state.selection_has_mask = false;
+        app_state.selection_mask.clear();
 
         gtk_widget_queue_draw(app_state.drawing_area);
         return;
@@ -5316,7 +5484,7 @@ void on_tool_clicked(GtkButton* button, gpointer data) {
     
     // Clear or commit selection when switching tools
     if (new_tool != app_state.current_tool) {
-        if (new_tool != TOOL_RECT_SELECT && new_tool != TOOL_LASSO_SELECT) {
+        if (!tool_is_selection_tool(new_tool)) {
             if (app_state.floating_selection_active) {
                 commit_floating_selection();
             } else {
@@ -5334,7 +5502,7 @@ void on_tool_clicked(GtkButton* button, gpointer data) {
         app_state.line_width = line_thickness_options[app_state.active_line_thickness_index];
         update_line_thickness_buttons();
     }
-        if (new_tool == TOOL_ZOOM) {
+    if (new_tool == TOOL_ZOOM) {
         update_zoom_buttons();
     }
     app_state.polygon_points.clear();
@@ -5651,6 +5819,8 @@ const char* get_tool_icon_filename(Tool tool) {
     switch (tool) {
         case TOOL_LASSO_SELECT: return "stock-tool-free-select.png";
         case TOOL_RECT_SELECT: return "stock-tool-rect-select.png";
+        case TOOL_SELECT_BY_COLOR: return "stock-tool-by-color-select.png";
+        case TOOL_FUZZY_SELECT: return "stock-tool-fuzzy-select.png";
         case TOOL_ERASER: return "stock-tool-eraser.png";
         case TOOL_FILL: return "stock-tool-bucket-fill.png";
         case TOOL_GRADIENT_FILL: return "stock-tool-gradient-fill.png";
@@ -5935,31 +6105,41 @@ int main(int argc, char* argv[]) {
         create_tool_button(TOOL_RECT_SELECT, 
             _("Rectangle Select - Select rectangular regions (Ctrl+C to copy, Ctrl+X to cut)")), 
         1, 0, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(toolbox),
+        create_tool_button(TOOL_SELECT_BY_COLOR,
+            _("Select by Colour - Select all matching pixels in the image")),
+        0, 1, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(toolbox),
+        create_tool_button(TOOL_FUZZY_SELECT,
+            _("Fuzzy Select - Select connected matching pixels around the click point")),
+        1, 1, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_FILL, 
             _("Fill Tool - Fill areas with color")), 
-        0, 1, 1, 1);
+        0, 2, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_GRADIENT_FILL,
             _("Gradient Fill - Click start and end points (hold Ctrl for circular gradient)")),
-        0, 2, 1, 1);
+        0, 3, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_SMUDGE,
             _("Smudge Tool - Drag to smear existing pixels")),
-        1, 2, 1, 1);
+        1, 3, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_EYEDROPPER, 
             _("Eyedropper - Pick color from canvas")), 
-        1, 1, 1, 1);
+        1, 2, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ERASER, 
             _("Eraser - Erase to transparency")), 
-        0, 3, 1, 1);
+        0, 4, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ZOOM, 
@@ -5969,62 +6149,62 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_PENCIL, 
             _("Pencil - Draw thin lines")), 
-        0, 4, 1, 1);
+        0, 5, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_PAINTBRUSH, 
             _("Paintbrush - Draw with brush strokes")), 
-        1, 3, 1, 1);
+        1, 4, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_AIRBRUSH, 
             _("Airbrush - Spray paint effect")), 
-        0, 5, 1, 1);
+        0, 6, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_TEXT, 
             _("Text Tool - Add text (Left-click outside to finalize, Right-click outside to cancel)")), 
-        1, 4, 1, 1);
+        1, 5, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_LINE, 
             _("Line Tool - Draw straight lines (hold Shift for horizontal/vertical)")), 
-        0, 6, 1, 1);
+        0, 7, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_CURVE, 
             _("Curve Tool - Draw curved lines")), 
-        1, 5, 1, 1);
+        1, 7, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_RECTANGLE, 
             _("Rectangle - Draw rectangles")), 
-        0, 7, 1, 1);
+        0, 8, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_POLYGON, 
             _("Polygon - Draw multi-sided shapes")), 
-        1, 9, 1, 1);
+        1, 8, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ELLIPSE, 
             _("Ellipse/Circle - Draw ellipses (hold Shift for circles)")), 
-        0, 8, 1, 1);
+        0, 9, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_ROUNDED_RECT,
             _("Rounded Rectangle - Draw rectangles with rounded corners")),
-        1, 7, 1, 1);
+        1, 9, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_REGULAR_POLYGON,
             _("Polygon Button - Draw regular polygons (asks for 3-50 sides, hold Ctrl for center, Shift for uniform)")),
-        0, 9, 1, 1);
+        0, 10, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_STAR,
             _("Star - Draw stars (asks for 3-50 points, hold Ctrl for center, Shift for uniform)")),
-        1, 8, 1, 1);
+        1, 10, 1, 1);
     
     gtk_box_pack_start(GTK_BOX(tool_column), toolbox, FALSE, FALSE, 0);
 
