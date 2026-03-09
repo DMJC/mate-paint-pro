@@ -10,6 +10,7 @@ Installation and Prerequisites
 Media
 --
 <img width="1171" height="875" alt="image" src="https://github.com/user-attachments/assets/c06842af-bc0a-4fe6-a3e1-58a08fa95a05" />
+
 --
 Credits
 --
