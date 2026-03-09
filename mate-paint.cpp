@@ -5964,7 +5964,7 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ZOOM, 
             _("Zoom Tool - Zoom in/out")), 
-        1, 9, 1, 1);
+        1, 6, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_PENCIL, 
@@ -6004,7 +6004,7 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_POLYGON, 
             _("Polygon - Draw multi-sided shapes")), 
-        1, 6, 1, 1);
+        1, 9, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ELLIPSE, 
