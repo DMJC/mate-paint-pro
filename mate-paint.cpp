@@ -46,6 +46,7 @@ enum Tool {
     TOOL_POLYGON,
     TOOL_ELLIPSE,
     TOOL_REGULAR_POLYGON,
+    TOOL_STAR,
     TOOL_ROUNDED_RECT,
     TOOL_COUNT
 };
@@ -91,7 +92,9 @@ void move_layer_down(int index);
 void merge_layer_down(int index);
 void sync_layer_controls();
 bool ask_regular_polygon_sides(GtkWidget* parent);
+bool ask_star_points(GtkWidget* parent);
 void build_regular_polygon_points(double start_x, double start_y, double end_x, double end_y, bool from_center, bool uniform, int sides, std::vector<std::pair<double, double>>& points);
+void build_star_points(double start_x, double start_y, double end_x, double end_y, bool from_center, bool uniform, int points_count, std::vector<std::pair<double, double>>& points);
 void draw_regular_polygon(cairo_t* cr, const std::vector<std::pair<double, double>>& points);
 
 struct UndoSnapshot {
@@ -134,6 +137,7 @@ struct AppState {
     bool gradient_fill_first_point_set = false;
     bool gradient_fill_circular = false;
     int regular_polygon_sides = 5;
+    int star_points = 5;
     
     // Curve tool state
     bool curve_active = false;
@@ -360,7 +364,7 @@ bool tool_needs_preview(Tool tool) {
     return tool == TOOL_LASSO_SELECT || tool == TOOL_RECT_SELECT ||
            tool == TOOL_LINE || tool == TOOL_CURVE ||
            tool == TOOL_RECTANGLE || tool == TOOL_POLYGON ||
-           tool == TOOL_ELLIPSE || tool == TOOL_REGULAR_POLYGON ||
+           tool == TOOL_ELLIPSE || tool == TOOL_REGULAR_POLYGON || tool == TOOL_STAR ||
            tool == TOOL_ROUNDED_RECT || tool == TOOL_GRADIENT_FILL;
 }
 
@@ -371,7 +375,7 @@ int tool_to_index(Tool tool) {
 bool tool_supports_line_thickness(Tool tool) {
     return tool == TOOL_PAINTBRUSH || tool == TOOL_AIRBRUSH || tool == TOOL_ERASER || tool == TOOL_SMUDGE ||
            tool == TOOL_LINE || tool == TOOL_CURVE || tool == TOOL_RECTANGLE ||
-           tool == TOOL_POLYGON || tool == TOOL_ELLIPSE || tool == TOOL_REGULAR_POLYGON || tool == TOOL_ROUNDED_RECT;
+           tool == TOOL_POLYGON || tool == TOOL_ELLIPSE || tool == TOOL_REGULAR_POLYGON || tool == TOOL_STAR || tool == TOOL_ROUNDED_RECT;
 }
 
 bool tool_shows_brush_hover_outline(Tool tool) {
@@ -1220,6 +1224,56 @@ void build_regular_polygon_points(double start_x, double start_y, double end_x, 
         points.push_back({
             center_x + cos(angle) * radius_x,
             center_y + sin(angle) * radius_y
+        });
+    }
+}
+
+void build_star_points(double start_x, double start_y, double end_x, double end_y, bool from_center, bool uniform, int points_count, std::vector<std::pair<double, double>>& points) {
+    points.clear();
+
+    if (points_count < 3) {
+        return;
+    }
+
+    double center_x = 0.0;
+    double center_y = 0.0;
+    double radius_x = 0.0;
+    double radius_y = 0.0;
+
+    if (from_center) {
+        center_x = start_x;
+        center_y = start_y;
+        radius_x = fabs(end_x - start_x);
+        radius_y = fabs(end_y - start_y);
+    } else {
+        center_x = (start_x + end_x) / 2.0;
+        center_y = (start_y + end_y) / 2.0;
+        radius_x = fabs(end_x - start_x) / 2.0;
+        radius_y = fabs(end_y - start_y) / 2.0;
+    }
+
+    if (uniform) {
+        double radius = fmax(radius_x, radius_y);
+        radius_x = radius;
+        radius_y = radius;
+    }
+
+    if (radius_x < 0.1 || radius_y < 0.1) {
+        return;
+    }
+
+    const double inner_scale = 0.5;
+    const double start_angle = -M_PI / 2.0;
+    const int vertex_count = points_count * 2;
+    const double step = (2.0 * M_PI) / static_cast<double>(vertex_count);
+
+    for (int i = 0; i < vertex_count; ++i) {
+        const bool is_outer = (i % 2 == 0);
+        const double scale = is_outer ? 1.0 : inner_scale;
+        double angle = start_angle + step * static_cast<double>(i);
+        points.push_back({
+            center_x + cos(angle) * radius_x * scale,
+            center_y + sin(angle) * radius_y * scale
         });
     }
 }
@@ -2391,6 +2445,31 @@ void draw_preview(cairo_t* cr) {
             }
             break;
         }
+
+        case TOOL_STAR: {
+            std::vector<std::pair<double, double>> points;
+            build_star_points(
+                app_state.start_x,
+                app_state.start_y,
+                preview_x,
+                preview_y,
+                app_state.ctrl_pressed,
+                app_state.shift_pressed,
+                app_state.star_points,
+                points
+            );
+
+            if (points.size() >= 6) {
+                draw_ant_path(cr);
+                cairo_move_to(cr, points[0].first, points[0].second);
+                for (size_t i = 1; i < points.size(); ++i) {
+                    cairo_line_to(cr, points[i].first, points[i].second);
+                }
+                cairo_close_path(cr);
+                cairo_stroke(cr);
+            }
+            break;
+        }
         
         case TOOL_ROUNDED_RECT: {
             double x = fmin(app_state.start_x, preview_x);
@@ -2992,7 +3071,7 @@ gboolean on_button_press(GtkWidget* widget, GdkEventButton* event, gpointer data
             app_state.current_tool == TOOL_SMUDGE ||
             app_state.current_tool == TOOL_LINE || app_state.current_tool == TOOL_CURVE ||
 			app_state.current_tool == TOOL_RECTANGLE || app_state.current_tool == TOOL_ELLIPSE ||
-            app_state.current_tool == TOOL_REGULAR_POLYGON || app_state.current_tool == TOOL_ROUNDED_RECT) {
+            app_state.current_tool == TOOL_REGULAR_POLYGON || app_state.current_tool == TOOL_STAR || app_state.current_tool == TOOL_ROUNDED_RECT) {
             push_undo_state();
         }
         app_state.last_x = canvas_x;
@@ -3001,7 +3080,7 @@ gboolean on_button_press(GtkWidget* widget, GdkEventButton* event, gpointer data
         app_state.start_y = canvas_y;
         app_state.current_x = canvas_x;
         app_state.current_y = canvas_y;
-        if (app_state.current_tool == TOOL_REGULAR_POLYGON) {
+        if (app_state.current_tool == TOOL_REGULAR_POLYGON || app_state.current_tool == TOOL_STAR) {
             app_state.ctrl_pressed = ((event->state & GDK_CONTROL_MASK) != 0);
         }
         
@@ -3041,7 +3120,7 @@ gboolean on_motion_notify(GtkWidget* widget, GdkEventMotion* event, gpointer dat
         app_state.current_x = canvas_x;
         app_state.current_y = canvas_y;
 
-        if (app_state.current_tool == TOOL_REGULAR_POLYGON) {
+        if (app_state.current_tool == TOOL_REGULAR_POLYGON || app_state.current_tool == TOOL_STAR) {
             app_state.ctrl_pressed = ((event->state & GDK_CONTROL_MASK) != 0);
         }
 
@@ -3189,6 +3268,22 @@ gboolean on_button_release(GtkWidget* widget, GdkEventButton* event, gpointer da
                     ((event->state & GDK_CONTROL_MASK) != 0) || app_state.ctrl_pressed,
                     app_state.shift_pressed,
                     app_state.regular_polygon_sides,
+                    points
+                );
+                draw_regular_polygon(cr, points);
+                stop_ant_animation();
+                break;
+            }
+            case TOOL_STAR: {
+                std::vector<std::pair<double, double>> points;
+                build_star_points(
+                    app_state.start_x,
+                    app_state.start_y,
+                    end_x,
+                    end_y,
+                    ((event->state & GDK_CONTROL_MASK) != 0) || app_state.ctrl_pressed,
+                    app_state.shift_pressed,
+                    app_state.star_points,
                     points
                 );
                 draw_regular_polygon(cr, points);
@@ -5175,11 +5270,42 @@ bool ask_regular_polygon_sides(GtkWidget* parent) {
     return accepted;
 }
 
+bool ask_star_points(GtkWidget* parent) {
+    GtkWidget* dialog = gtk_dialog_new_with_buttons(
+        _("Star Tool"),
+        GTK_WINDOW(parent),
+        static_cast<GtkDialogFlags>(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
+        _("_Cancel"), GTK_RESPONSE_CANCEL,
+        _("_OK"), GTK_RESPONSE_OK,
+        NULL
+    );
+
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget* label = gtk_label_new(_("Choose number of star points (3-50):"));
+    GtkWidget* spin = gtk_spin_button_new_with_range(3, 50, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin), app_state.star_points);
+
+    gtk_box_pack_start(GTK_BOX(content), label, FALSE, FALSE, 6);
+    gtk_box_pack_start(GTK_BOX(content), spin, FALSE, FALSE, 6);
+    gtk_widget_show_all(dialog);
+
+    bool accepted = (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK);
+    if (accepted) {
+        app_state.star_points = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spin));
+    }
+
+    gtk_widget_destroy(dialog);
+    return accepted;
+}
+
 // Tool button callback
 void on_tool_clicked(GtkButton* button, gpointer data) {
     Tool new_tool = (Tool)GPOINTER_TO_INT(data);
 
     if (new_tool == TOOL_REGULAR_POLYGON && !ask_regular_polygon_sides(app_state.window)) {
+        return;
+    }
+    if (new_tool == TOOL_STAR && !ask_star_points(app_state.window)) {
         return;
     }
     
@@ -5541,6 +5667,7 @@ const char* get_tool_icon_filename(Tool tool) {
         case TOOL_POLYGON: return "stock_draw-fill_polygon.png";
         case TOOL_ELLIPSE: return "stock_draw-ellipse.png";
         case TOOL_REGULAR_POLYGON: return "stock_draw-pentagon.png";
+        case TOOL_STAR: return "stock_draw-pentagon.png";
         case TOOL_ROUNDED_RECT: return "stock_draw-rounded-rectangle.png";
         default: return NULL;
     }
@@ -5893,6 +6020,11 @@ int main(int argc, char* argv[]) {
         create_tool_button(TOOL_REGULAR_POLYGON,
             _("Polygon Button - Draw regular polygons (asks for 3-50 sides, hold Ctrl for center, Shift for uniform)")),
         0, 9, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(toolbox),
+        create_tool_button(TOOL_STAR,
+            _("Star - Draw stars (asks for 3-50 points, hold Ctrl for center, Shift for uniform)")),
+        1, 8, 1, 1);
     
     gtk_box_pack_start(GTK_BOX(tool_column), toolbox, FALSE, FALSE, 0);
 
