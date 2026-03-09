@@ -12,6 +12,7 @@
 #include <cctype>
 #include <queue>
 #include <cstdio>
+#include <random>
 
 struct Layer {
     cairo_surface_t* surface = nullptr;
@@ -3664,6 +3665,312 @@ void on_edit_redo(GtkMenuItem* item, gpointer data) {
     redo_last_operation();
 }
 
+struct ConvolutionKernel {
+    std::vector<double> values;
+    int size = 0;
+    double divisor = 1.0;
+};
+
+static guint32 sample_surface_pixel(cairo_surface_t* surface, int x, int y) {
+    unsigned char* data = cairo_image_surface_get_data(surface);
+    const int stride = cairo_image_surface_get_stride(surface);
+    guint32* row = reinterpret_cast<guint32*>(data + y * stride);
+    return row[x];
+}
+
+static guint32 compose_premultiplied_pixel(double red, double green, double blue, double alpha) {
+    alpha = clamp_double(alpha, 0.0, 1.0);
+    red = clamp_double(red, 0.0, 255.0);
+    green = clamp_double(green, 0.0, 255.0);
+    blue = clamp_double(blue, 0.0, 255.0);
+
+    const guint8 out_alpha = static_cast<guint8>(std::lround(alpha * 255.0));
+    const double premul_factor = static_cast<double>(out_alpha) / 255.0;
+    const guint8 out_red = static_cast<guint8>(std::lround(red * premul_factor));
+    const guint8 out_green = static_cast<guint8>(std::lround(green * premul_factor));
+    const guint8 out_blue = static_cast<guint8>(std::lround(blue * premul_factor));
+
+    return (static_cast<guint32>(out_alpha) << 24) |
+           (static_cast<guint32>(out_red) << 16) |
+           (static_cast<guint32>(out_green) << 8) |
+           static_cast<guint32>(out_blue);
+}
+
+static void apply_convolution_to_active_layer(const ConvolutionKernel& kernel) {
+    if (app_state.layers.empty() || app_state.active_layer_index < 0 || app_state.active_layer_index >= (int)app_state.layers.size()) {
+        return;
+    }
+
+    cairo_surface_t* target_surface = app_state.layers[app_state.active_layer_index].surface;
+    if (!target_surface || kernel.size <= 0 || kernel.values.empty()) {
+        return;
+    }
+
+    const int width = app_state.canvas_width;
+    const int height = app_state.canvas_height;
+    cairo_surface_t* source_surface = clone_surface(target_surface, width, height);
+    if (!source_surface) {
+        return;
+    }
+
+    push_undo_state();
+
+    const int radius = kernel.size / 2;
+    const double divisor = (std::abs(kernel.divisor) < 1e-9) ? 1.0 : kernel.divisor;
+
+    cairo_surface_flush(source_surface);
+    cairo_surface_flush(target_surface);
+    unsigned char* target_data = cairo_image_surface_get_data(target_surface);
+    const int target_stride = cairo_image_surface_get_stride(target_surface);
+
+    for (int y = 0; y < height; ++y) {
+        guint32* target_row = reinterpret_cast<guint32*>(target_data + y * target_stride);
+        for (int x = 0; x < width; ++x) {
+            double red_sum = 0.0;
+            double green_sum = 0.0;
+            double blue_sum = 0.0;
+            double alpha_sum = 0.0;
+
+            for (int ky = -radius; ky <= radius; ++ky) {
+                for (int kx = -radius; kx <= radius; ++kx) {
+                    const int sx = std::max(0, std::min(width - 1, x + kx));
+                    const int sy = std::max(0, std::min(height - 1, y + ky));
+                    const double weight = kernel.values[(ky + radius) * kernel.size + (kx + radius)] / divisor;
+
+                    const guint32 pixel = sample_surface_pixel(source_surface, sx, sy);
+                    const double alpha = ((pixel >> 24) & 0xFF) / 255.0;
+                    const double premul_red = (pixel >> 16) & 0xFF;
+                    const double premul_green = (pixel >> 8) & 0xFF;
+                    const double premul_blue = pixel & 0xFF;
+
+                    double red = 0.0;
+                    double green = 0.0;
+                    double blue = 0.0;
+                    if (alpha > 0.0) {
+                        const double inv_alpha = 1.0 / alpha;
+                        red = clamp_double(premul_red * inv_alpha, 0.0, 255.0);
+                        green = clamp_double(premul_green * inv_alpha, 0.0, 255.0);
+                        blue = clamp_double(premul_blue * inv_alpha, 0.0, 255.0);
+                    }
+
+                    red_sum += red * weight;
+                    green_sum += green * weight;
+                    blue_sum += blue * weight;
+                    alpha_sum += alpha * weight;
+                }
+            }
+
+            target_row[x] = compose_premultiplied_pixel(red_sum, green_sum, blue_sum, alpha_sum);
+        }
+    }
+
+    cairo_surface_mark_dirty(target_surface);
+    cairo_surface_destroy(source_surface);
+    gtk_widget_queue_draw(app_state.drawing_area);
+}
+
+static void apply_cartoonify_to_active_layer() {
+    if (app_state.layers.empty() || app_state.active_layer_index < 0 || app_state.active_layer_index >= (int)app_state.layers.size()) {
+        return;
+    }
+
+    cairo_surface_t* target_surface = app_state.layers[app_state.active_layer_index].surface;
+    if (!target_surface) {
+        return;
+    }
+
+    const int width = app_state.canvas_width;
+    const int height = app_state.canvas_height;
+    cairo_surface_t* source_surface = clone_surface(target_surface, width, height);
+    if (!source_surface) {
+        return;
+    }
+
+    push_undo_state();
+    cairo_surface_flush(source_surface);
+    cairo_surface_flush(target_surface);
+
+    unsigned char* source_data = cairo_image_surface_get_data(source_surface);
+    unsigned char* target_data = cairo_image_surface_get_data(target_surface);
+    const int source_stride = cairo_image_surface_get_stride(source_surface);
+    const int target_stride = cairo_image_surface_get_stride(target_surface);
+
+    const int quantization_step = 64;
+    const double edge_threshold = 35.0;
+
+    for (int y = 0; y < height; ++y) {
+        guint32* target_row = reinterpret_cast<guint32*>(target_data + y * target_stride);
+        for (int x = 0; x < width; ++x) {
+            auto to_luma = [&](int sx, int sy) {
+                guint32* src_row = reinterpret_cast<guint32*>(source_data + sy * source_stride);
+                const guint32 pixel = src_row[sx];
+                const double alpha = ((pixel >> 24) & 0xFF) / 255.0;
+                if (alpha <= 0.0) {
+                    return 0.0;
+                }
+                const double red = ((pixel >> 16) & 0xFF) / alpha;
+                const double green = ((pixel >> 8) & 0xFF) / alpha;
+                const double blue = (pixel & 0xFF) / alpha;
+                return (red * 0.299) + (green * 0.587) + (blue * 0.114);
+            };
+
+            guint32* src_row = reinterpret_cast<guint32*>(source_data + y * source_stride);
+            const guint32 src_pixel = src_row[x];
+            const double alpha = ((src_pixel >> 24) & 0xFF) / 255.0;
+
+            if (alpha <= 0.0) {
+                target_row[x] = 0;
+                continue;
+            }
+
+            const double red = (((src_pixel >> 16) & 0xFF) / alpha);
+            const double green = (((src_pixel >> 8) & 0xFF) / alpha);
+            const double blue = ((src_pixel & 0xFF) / alpha);
+
+            const double luma_here = to_luma(x, y);
+            const double luma_right = to_luma(std::min(width - 1, x + 1), y);
+            const double luma_down = to_luma(x, std::min(height - 1, y + 1));
+            const bool edge = (std::abs(luma_here - luma_right) > edge_threshold) ||
+                              (std::abs(luma_here - luma_down) > edge_threshold);
+
+            if (edge) {
+                target_row[x] = compose_premultiplied_pixel(0.0, 0.0, 0.0, alpha);
+                continue;
+            }
+
+            const auto quantize = [&](double value) {
+                return clamp_double(std::floor(value / quantization_step) * quantization_step, 0.0, 255.0);
+            };
+
+            target_row[x] = compose_premultiplied_pixel(
+                quantize(red),
+                quantize(green),
+                quantize(blue),
+                alpha
+            );
+        }
+    }
+
+    cairo_surface_mark_dirty(target_surface);
+    cairo_surface_destroy(source_surface);
+    gtk_widget_queue_draw(app_state.drawing_area);
+}
+
+void on_filters_noise(GtkMenuItem* item, gpointer data) {
+    if (app_state.layers.empty() || app_state.active_layer_index < 0 || app_state.active_layer_index >= (int)app_state.layers.size()) {
+        return;
+    }
+
+    GtkWidget* dialog = gtk_dialog_new_with_buttons(
+        _("Noise"),
+        GTK_WINDOW(app_state.window),
+        static_cast<GtkDialogFlags>(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
+        _("_Cancel"), GTK_RESPONSE_CANCEL,
+        _("_Apply"), GTK_RESPONSE_OK,
+        NULL
+    );
+
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    GtkWidget* container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(container), 10);
+    gtk_container_add(GTK_CONTAINER(content), container);
+
+    GtkWidget* seed_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget* seed_label = gtk_label_new(_("Seed:"));
+    GtkWidget* seed_spin = gtk_spin_button_new_with_range(0.0, 2147483647.0, 1.0);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(seed_spin), 0.0);
+
+    GtkWidget* monochrome_check = gtk_check_button_new_with_label(_("Monochrome"));
+
+    gtk_box_pack_start(GTK_BOX(seed_row), seed_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(seed_row), seed_spin, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(container), seed_row, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(container), monochrome_check, FALSE, FALSE, 0);
+
+    gtk_widget_show_all(dialog);
+    const int response = gtk_dialog_run(GTK_DIALOG(dialog));
+    if (response != GTK_RESPONSE_OK) {
+        gtk_widget_destroy(dialog);
+        return;
+    }
+
+    const guint32 seed = static_cast<guint32>(gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(seed_spin)));
+    const bool monochrome = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(monochrome_check));
+    gtk_widget_destroy(dialog);
+
+    cairo_surface_t* target_surface = app_state.layers[app_state.active_layer_index].surface;
+    if (!target_surface) {
+        return;
+    }
+
+    push_undo_state();
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<int> distribution(0, 255);
+
+    cairo_surface_flush(target_surface);
+    unsigned char* target_data = cairo_image_surface_get_data(target_surface);
+    const int stride = cairo_image_surface_get_stride(target_surface);
+
+    for (int y = 0; y < app_state.canvas_height; ++y) {
+        guint32* row = reinterpret_cast<guint32*>(target_data + y * stride);
+        for (int x = 0; x < app_state.canvas_width; ++x) {
+            const guint32 pixel = row[x];
+            const double alpha = ((pixel >> 24) & 0xFF) / 255.0;
+
+            const int mono_value = distribution(rng);
+            const double red = monochrome ? mono_value : distribution(rng);
+            const double green = monochrome ? mono_value : distribution(rng);
+            const double blue = monochrome ? mono_value : distribution(rng);
+            row[x] = compose_premultiplied_pixel(red, green, blue, alpha);
+        }
+    }
+
+    cairo_surface_mark_dirty(target_surface);
+    gtk_widget_queue_draw(app_state.drawing_area);
+}
+
+void on_filters_gaussian_blur(GtkMenuItem* item, gpointer data) {
+    ConvolutionKernel kernel;
+    kernel.values = {
+        1, 4, 6, 4, 1,
+        4, 16, 24, 16, 4,
+        6, 24, 36, 24, 6,
+        4, 16, 24, 16, 4,
+        1, 4, 6, 4, 1
+    };
+    kernel.size = 5;
+    kernel.divisor = 256.0;
+    apply_convolution_to_active_layer(kernel);
+}
+
+void on_filters_blur(GtkMenuItem* item, gpointer data) {
+    ConvolutionKernel kernel;
+    kernel.values = {
+        1, 1, 1,
+        1, 1, 1,
+        1, 1, 1
+    };
+    kernel.size = 3;
+    kernel.divisor = 9.0;
+    apply_convolution_to_active_layer(kernel);
+}
+
+void on_filters_sharpen(GtkMenuItem* item, gpointer data) {
+    ConvolutionKernel kernel;
+    kernel.values = {
+         0, -1,  0,
+        -1,  5, -1,
+         0, -1,  0
+    };
+    kernel.size = 3;
+    kernel.divisor = 1.0;
+    apply_convolution_to_active_layer(kernel);
+}
+
+void on_filters_cartoonify(GtkMenuItem* item, gpointer data) {
+    apply_cartoonify_to_active_layer();
+}
+
 struct ColorBalanceWindowState {
     cairo_surface_t* original_surface = nullptr;
     GtkWidget* red_scale = nullptr;
@@ -5436,6 +5743,27 @@ int main(int argc, char* argv[]) {
     gtk_menu_shell_append(GTK_MENU_SHELL(image_menu), image_flip_horizontal);
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(image_menu_item), image_menu);
 
+    GtkWidget* filters_menu = gtk_menu_new();
+    GtkWidget* filters_menu_item = gtk_menu_item_new_with_label(_("Filters"));
+    GtkWidget* filters_noise = gtk_menu_item_new_with_label(_("Noise"));
+    GtkWidget* filters_gaussian_blur = gtk_menu_item_new_with_label(_("Gaussian Blur"));
+    GtkWidget* filters_blur = gtk_menu_item_new_with_label(_("Blur"));
+    GtkWidget* filters_cartoonify = gtk_menu_item_new_with_label(_("Cartoonify"));
+    GtkWidget* filters_sharpen = gtk_menu_item_new_with_label(_("Sharpen"));
+
+    g_signal_connect(filters_noise, "activate", G_CALLBACK(on_filters_noise), NULL);
+    g_signal_connect(filters_gaussian_blur, "activate", G_CALLBACK(on_filters_gaussian_blur), NULL);
+    g_signal_connect(filters_blur, "activate", G_CALLBACK(on_filters_blur), NULL);
+    g_signal_connect(filters_cartoonify, "activate", G_CALLBACK(on_filters_cartoonify), NULL);
+    g_signal_connect(filters_sharpen, "activate", G_CALLBACK(on_filters_sharpen), NULL);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(filters_menu), filters_noise);
+    gtk_menu_shell_append(GTK_MENU_SHELL(filters_menu), filters_gaussian_blur);
+    gtk_menu_shell_append(GTK_MENU_SHELL(filters_menu), filters_blur);
+    gtk_menu_shell_append(GTK_MENU_SHELL(filters_menu), filters_cartoonify);
+    gtk_menu_shell_append(GTK_MENU_SHELL(filters_menu), filters_sharpen);
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(filters_menu_item), filters_menu);
+
     GtkWidget* help_menu = gtk_menu_new();
     GtkWidget* help_menu_item = gtk_menu_item_new_with_label(_("Help"));
     GtkWidget* help_manual = gtk_menu_item_new_with_label(_("Contents"));
@@ -5453,6 +5781,7 @@ int main(int argc, char* argv[]) {
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), draw_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), view_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), image_menu_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), filters_menu_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), help_menu_item);
     
     gtk_box_pack_start(GTK_BOX(main_box), menubar, FALSE, FALSE, 0);
