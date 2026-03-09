@@ -161,6 +161,8 @@ struct AppState {
     double selection_x2 = 0;
     double selection_y2 = 0;
     std::vector<std::pair<double, double>> selection_path;
+    std::vector<bool> selection_mask;
+    bool selection_has_mask = false;
     cairo_surface_t* floating_surface = nullptr;
     bool floating_selection_active = false;
     bool dragging_selection = false;
@@ -756,6 +758,8 @@ void clear_selection() {
     app_state.floating_drag_completed = false;
     app_state.has_selection = false;
     app_state.selection_path.clear();
+    app_state.selection_mask.clear();
+    app_state.selection_has_mask = false;
     app_state.drag_undo_snapshot_taken = false;
     if (app_state.drawing_area) {
         gtk_widget_queue_draw(app_state.drawing_area);
@@ -808,6 +812,8 @@ void finalize_lasso_selection() {
     app_state.has_selection = true;
     app_state.selection_is_rect = false;
     app_state.floating_selection_active = false;
+    app_state.selection_has_mask = false;
+    app_state.selection_mask.clear();
     app_state.selection_path = app_state.lasso_points;
     app_state.lasso_points.clear();
 
@@ -1033,6 +1039,8 @@ void paste_selection() {
     app_state.has_selection = true;
     app_state.selection_is_rect = true;
     app_state.selection_path.clear();
+    app_state.selection_has_mask = false;
+    app_state.selection_mask.clear();
     app_state.selection_x1 = paste_x;
     app_state.selection_y1 = paste_y;
     app_state.selection_x2 = paste_x + app_state.clipboard_width;
@@ -1971,6 +1979,8 @@ bool select_pixels_by_color(int start_x, int start_y, bool contiguous_only, int 
     int max_x = 0;
     int max_y = 0;
 
+    std::vector<bool> selection_mask(app_state.canvas_width * app_state.canvas_height, false);
+
     if (contiguous_only) {
         std::queue<std::pair<int, int>> pixels;
         std::vector<bool> visited(app_state.canvas_width * app_state.canvas_height, false);
@@ -1987,6 +1997,7 @@ bool select_pixels_by_color(int start_x, int start_y, bool contiguous_only, int 
             if (!pixel_matches_with_tolerance(row[x], target, tolerance)) continue;
 
             found = true;
+            selection_mask[y * app_state.canvas_width + x] = true;
             min_x = std::min(min_x, x);
             min_y = std::min(min_y, y);
             max_x = std::max(max_x, x);
@@ -2010,6 +2021,7 @@ bool select_pixels_by_color(int start_x, int start_y, bool contiguous_only, int 
             for (int x = 0; x < app_state.canvas_width; x++) {
                 if (!pixel_matches_with_tolerance(row[x], target, tolerance)) continue;
                 found = true;
+                selection_mask[y * app_state.canvas_width + x] = true;
                 min_x = std::min(min_x, x);
                 min_y = std::min(min_y, y);
                 max_x = std::max(max_x, x);
@@ -2027,6 +2039,8 @@ bool select_pixels_by_color(int start_x, int start_y, bool contiguous_only, int 
     app_state.selection_is_rect = true;
     app_state.floating_selection_active = false;
     app_state.selection_path.clear();
+    app_state.selection_mask = std::move(selection_mask);
+    app_state.selection_has_mask = true;
     app_state.selection_x1 = min_x;
     app_state.selection_y1 = min_y;
     app_state.selection_x2 = max_x + 1;
@@ -2333,7 +2347,39 @@ void draw_selection_overlay(cairo_t* cr) {
     
     draw_ant_path(cr);
     
-    if (app_state.selection_is_rect) {
+    if (app_state.selection_has_mask && !app_state.selection_mask.empty()) {
+        int width = app_state.canvas_width;
+        int height = app_state.canvas_height;
+
+        auto selected_at = [&](int x, int y) -> bool {
+            if (x < 0 || y < 0 || x >= width || y >= height) return false;
+            return app_state.selection_mask[y * width + x];
+        };
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                if (!selected_at(x, y)) continue;
+
+                if (!selected_at(x, y - 1)) {
+                    cairo_move_to(cr, x, y);
+                    cairo_line_to(cr, x + 1, y);
+                }
+                if (!selected_at(x + 1, y)) {
+                    cairo_move_to(cr, x + 1, y);
+                    cairo_line_to(cr, x + 1, y + 1);
+                }
+                if (!selected_at(x, y + 1)) {
+                    cairo_move_to(cr, x, y + 1);
+                    cairo_line_to(cr, x + 1, y + 1);
+                }
+                if (!selected_at(x - 1, y)) {
+                    cairo_move_to(cr, x, y);
+                    cairo_line_to(cr, x, y + 1);
+                }
+            }
+        }
+        cairo_stroke(cr);
+    } else if (app_state.selection_is_rect) {
         double x1 = fmin(app_state.selection_x1, app_state.selection_x2);
         double y1 = fmin(app_state.selection_y1, app_state.selection_y2);
         double x2 = fmax(app_state.selection_x1, app_state.selection_x2);
@@ -3410,6 +3456,8 @@ gboolean on_button_release(GtkWidget* widget, GdkEventButton* event, gpointer da
                 app_state.has_selection = true;
                 app_state.selection_is_rect = true;
                 app_state.floating_selection_active = false;
+                app_state.selection_has_mask = false;
+                app_state.selection_mask.clear();
                 app_state.selection_x1 = app_state.start_x;
                 app_state.selection_y1 = app_state.start_y;
                 app_state.selection_x2 = end_x;
@@ -5088,6 +5136,8 @@ void on_image_rotate_clockwise(GtkMenuItem* item, gpointer data) {
 
         app_state.selection_is_rect = true;
         app_state.selection_path.clear();
+        app_state.selection_has_mask = false;
+        app_state.selection_mask.clear();
         app_state.selection_x1 = bounds.x;
         app_state.selection_y1 = bounds.y;
         app_state.selection_x2 = bounds.x + new_width;
@@ -5163,6 +5213,8 @@ void on_image_rotate_counter_clockwise(GtkMenuItem* item, gpointer data) {
 
         app_state.selection_is_rect = true;
         app_state.selection_path.clear();
+        app_state.selection_has_mask = false;
+        app_state.selection_mask.clear();
         app_state.selection_x1 = bounds.x;
         app_state.selection_y1 = bounds.y;
         app_state.selection_x2 = bounds.x + new_width;
@@ -5236,6 +5288,8 @@ void on_image_flip_horizontal(GtkMenuItem* item, gpointer data) {
 
         app_state.selection_is_rect = true;
         app_state.selection_path.clear();
+        app_state.selection_has_mask = false;
+        app_state.selection_mask.clear();
 
         gtk_widget_queue_draw(app_state.drawing_area);
         return;
@@ -5300,6 +5354,8 @@ void on_image_flip_vertical(GtkMenuItem* item, gpointer data) {
 
         app_state.selection_is_rect = true;
         app_state.selection_path.clear();
+        app_state.selection_has_mask = false;
+        app_state.selection_mask.clear();
 
         gtk_widget_queue_draw(app_state.drawing_area);
         return;
