@@ -5667,7 +5667,7 @@ const char* get_tool_icon_filename(Tool tool) {
         case TOOL_POLYGON: return "stock_draw-fill_polygon.png";
         case TOOL_ELLIPSE: return "stock_draw-ellipse.png";
         case TOOL_REGULAR_POLYGON: return "stock_draw-pentagon.png";
-        case TOOL_STAR: return "stock_draw-pentagon.png";
+        case TOOL_STAR: return "stock_draw-star.png";
         case TOOL_ROUNDED_RECT: return "stock_draw-rounded-rectangle.png";
         default: return NULL;
     }
