@@ -6109,102 +6109,102 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_SELECT_BY_COLOR,
             _("Select by Colour - Select all matching pixels in the image")),
-        0, 10, 1, 1);
+        0, 1, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_FUZZY_SELECT,
             _("Fuzzy Select - Select connected matching pixels around the click point")),
-        1, 10, 1, 1);
+        1, 1, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_FILL, 
             _("Fill Tool - Fill areas with color")), 
-        0, 1, 1, 1);
+        0, 2, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_GRADIENT_FILL,
             _("Gradient Fill - Click start and end points (hold Ctrl for circular gradient)")),
-        0, 2, 1, 1);
+        0, 3, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_SMUDGE,
             _("Smudge Tool - Drag to smear existing pixels")),
-        1, 2, 1, 1);
+        1, 3, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_EYEDROPPER, 
             _("Eyedropper - Pick color from canvas")), 
-        1, 1, 1, 1);
+        1, 2, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ERASER, 
             _("Eraser - Erase to transparency")), 
-        0, 3, 1, 1);
+        0, 4, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ZOOM, 
             _("Zoom Tool - Zoom in/out")), 
-        1, 9, 1, 1);
+        1, 6, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_PENCIL, 
             _("Pencil - Draw thin lines")), 
-        0, 4, 1, 1);
+        0, 5, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_PAINTBRUSH, 
             _("Paintbrush - Draw with brush strokes")), 
-        1, 3, 1, 1);
+        1, 4, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_AIRBRUSH, 
             _("Airbrush - Spray paint effect")), 
-        0, 5, 1, 1);
+        0, 6, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_TEXT, 
             _("Text Tool - Add text (Left-click outside to finalize, Right-click outside to cancel)")), 
-        1, 4, 1, 1);
+        1, 5, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_LINE, 
             _("Line Tool - Draw straight lines (hold Shift for horizontal/vertical)")), 
-        0, 6, 1, 1);
+        0, 7, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_CURVE, 
             _("Curve Tool - Draw curved lines")), 
-        1, 5, 1, 1);
+        1, 7, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_RECTANGLE, 
             _("Rectangle - Draw rectangles")), 
-        0, 7, 1, 1);
+        0, 8, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_POLYGON, 
             _("Polygon - Draw multi-sided shapes")), 
-        1, 6, 1, 1);
+        1, 8, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ELLIPSE, 
             _("Ellipse/Circle - Draw ellipses (hold Shift for circles)")), 
-        0, 8, 1, 1);
+        0, 9, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_ROUNDED_RECT,
             _("Rounded Rectangle - Draw rectangles with rounded corners")),
-        1, 7, 1, 1);
+        1, 9, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_REGULAR_POLYGON,
             _("Polygon Button - Draw regular polygons (asks for 3-50 sides, hold Ctrl for center, Shift for uniform)")),
-        0, 9, 1, 1);
+        0, 10, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_STAR,
             _("Star - Draw stars (asks for 3-50 points, hold Ctrl for center, Shift for uniform)")),
-        1, 8, 1, 1);
+        1, 10, 1, 1);
     
     gtk_box_pack_start(GTK_BOX(tool_column), toolbox, FALSE, FALSE, 0);
 
