@@ -3901,43 +3901,40 @@ void on_filters_noise(GtkMenuItem* item, gpointer data) {
 }
 
 void on_filters_gaussian_blur(GtkMenuItem* item, gpointer data) {
-    const ConvolutionKernel kernel = {
-        {
-            1, 4, 6, 4, 1,
-            4, 16, 24, 16, 4,
-            6, 24, 36, 24, 6,
-            4, 16, 24, 16, 4,
-            1, 4, 6, 4, 1
-        },
-        5,
-        256.0
+    ConvolutionKernel kernel;
+    kernel.values = {
+        1, 4, 6, 4, 1,
+        4, 16, 24, 16, 4,
+        6, 24, 36, 24, 6,
+        4, 16, 24, 16, 4,
+        1, 4, 6, 4, 1
     };
+    kernel.size = 5;
+    kernel.divisor = 256.0;
     apply_convolution_to_active_layer(kernel);
 }
 
 void on_filters_blur(GtkMenuItem* item, gpointer data) {
-    const ConvolutionKernel kernel = {
-        {
-            1, 1, 1,
-            1, 1, 1,
-            1, 1, 1
-        },
-        3,
-        9.0
+    ConvolutionKernel kernel;
+    kernel.values = {
+        1, 1, 1,
+        1, 1, 1,
+        1, 1, 1
     };
+    kernel.size = 3;
+    kernel.divisor = 9.0;
     apply_convolution_to_active_layer(kernel);
 }
 
 void on_filters_sharpen(GtkMenuItem* item, gpointer data) {
-    const ConvolutionKernel kernel = {
-        {
-             0, -1,  0,
-            -1,  5, -1,
-             0, -1,  0
-        },
-        3,
-        1.0
+    ConvolutionKernel kernel;
+    kernel.values = {
+         0, -1,  0,
+        -1,  5, -1,
+         0, -1,  0
     };
+    kernel.size = 3;
+    kernel.divisor = 1.0;
     apply_convolution_to_active_layer(kernel);
 }
 
