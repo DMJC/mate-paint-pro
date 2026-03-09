@@ -3233,7 +3233,7 @@ void on_view_horizontal_center_toggled(GtkCheckMenuItem* item, gpointer data) {
     if (app_state.drawing_area) gtk_widget_queue_draw(app_state.drawing_area);
 }
 
-void prompt_guides(bool vertical) {
+bool prompt_guides(bool vertical) {
     GtkWidget* dialog = gtk_dialog_new_with_buttons(
         vertical ? _("Vertical Guides") : _("Horizontal Guides"),
         GTK_WINDOW(app_state.window),
@@ -3249,36 +3249,65 @@ void prompt_guides(bool vertical) {
     gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
     GtkWidget* count_label = gtk_label_new(_("Number of lines:"));
     GtkWidget* spacing_label = gtk_label_new(_("Spacing (pixels):"));
+    GtkWidget* offset_label = gtk_label_new(_("Offset (pixels):"));
     GtkWidget* count_spin = gtk_spin_button_new_with_range(1, 100, 1);
     GtkWidget* spacing_spin = gtk_spin_button_new_with_range(1, 1000, 1);
+    GtkWidget* offset_spin = gtk_spin_button_new_with_range(0, 1000, 1);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(count_spin), 3);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(spacing_spin), 50);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(offset_spin), 0);
     gtk_grid_attach(GTK_GRID(grid), count_label, 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), count_spin, 1, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), spacing_label, 0, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), spacing_spin, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), offset_label, 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), offset_spin, 1, 2, 1, 1);
     gtk_box_pack_start(GTK_BOX(content), grid, TRUE, TRUE, 0);
     gtk_widget_show_all(dialog);
 
+    bool applied = false;
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
         int count = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(count_spin));
         int spacing = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spacing_spin));
+        int offset = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(offset_spin));
         std::vector<double>& guides = vertical ? app_state.vertical_guides : app_state.horizontal_guides;
         guides.clear();
         for (int i = 0; i < count; ++i) {
-            guides.push_back((i + 1) * spacing);
+            guides.push_back(offset + ((i + 1) * spacing));
         }
         if (app_state.drawing_area) gtk_widget_queue_draw(app_state.drawing_area);
+        applied = true;
     }
     gtk_widget_destroy(dialog);
+    return applied;
 }
 
-void on_view_vertical_guides_activate(GtkMenuItem* item, gpointer data) {
-    prompt_guides(true);
+void on_view_vertical_guides_toggled(GtkCheckMenuItem* item, gpointer data) {
+    std::vector<double>& guides = app_state.vertical_guides;
+    if (gtk_check_menu_item_get_active(item)) {
+        if (!prompt_guides(true)) {
+            g_signal_handlers_block_by_func(item, (gpointer)on_view_vertical_guides_toggled, data);
+            gtk_check_menu_item_set_active(item, FALSE);
+            g_signal_handlers_unblock_by_func(item, (gpointer)on_view_vertical_guides_toggled, data);
+        }
+        return;
+    }
+    guides.clear();
+    if (app_state.drawing_area) gtk_widget_queue_draw(app_state.drawing_area);
 }
 
-void on_view_horizontal_guides_activate(GtkMenuItem* item, gpointer data) {
-    prompt_guides(false);
+void on_view_horizontal_guides_toggled(GtkCheckMenuItem* item, gpointer data) {
+    std::vector<double>& guides = app_state.horizontal_guides;
+    if (gtk_check_menu_item_get_active(item)) {
+        if (!prompt_guides(false)) {
+            g_signal_handlers_block_by_func(item, (gpointer)on_view_horizontal_guides_toggled, data);
+            gtk_check_menu_item_set_active(item, FALSE);
+            g_signal_handlers_unblock_by_func(item, (gpointer)on_view_horizontal_guides_toggled, data);
+        }
+        return;
+    }
+    guides.clear();
+    if (app_state.drawing_area) gtk_widget_queue_draw(app_state.drawing_area);
 }
 
 
@@ -5367,13 +5396,13 @@ int main(int argc, char* argv[]) {
     GtkWidget* view_menu_item = gtk_menu_item_new_with_label(_("View"));
     GtkWidget* view_vertical_center = gtk_check_menu_item_new_with_label(_("View Vertical Center Guide"));
     GtkWidget* view_horizontal_center = gtk_check_menu_item_new_with_label(_("View Horizontal Center Guide"));
-    GtkWidget* view_vertical_guides = gtk_menu_item_new_with_label(_("View Vertical Guides..."));
-    GtkWidget* view_horizontal_guides = gtk_menu_item_new_with_label(_("View Horizontal Guides..."));
+    GtkWidget* view_vertical_guides = gtk_check_menu_item_new_with_label(_("View Vertical Guides"));
+    GtkWidget* view_horizontal_guides = gtk_check_menu_item_new_with_label(_("View Horizontal Guides"));
 
     g_signal_connect(view_vertical_center, "toggled", G_CALLBACK(on_view_vertical_center_toggled), NULL);
     g_signal_connect(view_horizontal_center, "toggled", G_CALLBACK(on_view_horizontal_center_toggled), NULL);
-    g_signal_connect(view_vertical_guides, "activate", G_CALLBACK(on_view_vertical_guides_activate), NULL);
-    g_signal_connect(view_horizontal_guides, "activate", G_CALLBACK(on_view_horizontal_guides_activate), NULL);
+    g_signal_connect(view_vertical_guides, "toggled", G_CALLBACK(on_view_vertical_guides_toggled), NULL);
+    g_signal_connect(view_horizontal_guides, "toggled", G_CALLBACK(on_view_horizontal_guides_toggled), NULL);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), view_vertical_center);
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), view_horizontal_center);
