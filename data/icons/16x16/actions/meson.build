@@ -21,4 +21,6 @@ install_data([
   'stock-tool-text.png',
   'stock-tool-zoom.png',
   'stock_draw-fill_polygon.png',
+  'stock-tool-color-select.png',
+  'stock-tool-fuzzy-select.png',
 ], install_dir: join_paths(pkgdatadir, 'icons', 'hicolor', '16x16', 'actions'))

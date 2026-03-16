@@ -492,9 +492,20 @@ void reset_zoom_to_default() {
     }
 }
 
+bool point_in_canvas(int x, int y) {
+    return x >= 0 && x < app_state.canvas_width && y >= 0 && y < app_state.canvas_height;
+}
+
 // Check if point is inside selection
 bool point_in_selection(double x, double y) {
     if (!app_state.has_selection) return false;
+
+    if (app_state.selection_has_mask && !app_state.selection_mask.empty()) {
+        int ix = static_cast<int>(std::floor(x));
+        int iy = static_cast<int>(std::floor(y));
+        if (!point_in_canvas(ix, iy)) return false;
+        return app_state.selection_mask[iy * app_state.canvas_width + ix];
+    }
     
     if (app_state.selection_is_rect) {
         double x1 = fmin(app_state.selection_x1, app_state.selection_x2);
@@ -858,6 +869,88 @@ SelectionPixelBounds get_selection_pixel_bounds() {
     return {pixel_x, pixel_y, pixel_x2 - pixel_x, pixel_y2 - pixel_y};
 }
 
+bool selection_mask_selected_at(int x, int y) {
+    if (!app_state.selection_has_mask || app_state.selection_mask.empty()) return false;
+    if (!point_in_canvas(x, y)) return false;
+    return app_state.selection_mask[y * app_state.canvas_width + x];
+}
+
+void copy_selection_masked_pixels(cairo_surface_t* destination, int dest_x, int dest_y,
+                                  cairo_surface_t* source, const SelectionPixelBounds& bounds) {
+    if (!destination || !source || !app_state.selection_has_mask || app_state.selection_mask.empty()) return;
+
+    cairo_surface_flush(source);
+    cairo_surface_flush(destination);
+
+    unsigned char* src_data = cairo_image_surface_get_data(source);
+    unsigned char* dst_data = cairo_image_surface_get_data(destination);
+    int src_stride = cairo_image_surface_get_stride(source);
+    int dst_stride = cairo_image_surface_get_stride(destination);
+    int src_width = cairo_image_surface_get_width(source);
+    int src_height = cairo_image_surface_get_height(source);
+    int dst_width = cairo_image_surface_get_width(destination);
+    int dst_height = cairo_image_surface_get_height(destination);
+
+    for (int y = 0; y < bounds.height; y++) {
+        int source_y = bounds.y + y;
+        int target_y = dest_y + y;
+        if (source_y < 0 || source_y >= src_height) continue;
+        if (target_y < 0 || target_y >= dst_height) continue;
+
+        guint32* src_row = reinterpret_cast<guint32*>(src_data + source_y * src_stride);
+        guint32* dst_row = reinterpret_cast<guint32*>(dst_data + target_y * dst_stride);
+
+        for (int x = 0; x < bounds.width; x++) {
+            int source_x = bounds.x + x;
+            int target_x = dest_x + x;
+            if (source_x < 0 || source_x >= src_width) continue;
+            if (target_x < 0 || target_x >= dst_width) continue;
+            if (!selection_mask_selected_at(source_x, source_y)) continue;
+            dst_row[target_x] = src_row[source_x];
+        }
+    }
+
+    cairo_surface_mark_dirty(destination);
+}
+
+void clear_selection_masked_pixels(cairo_surface_t* destination, const SelectionPixelBounds& bounds, guint32 fill_pixel) {
+    if (!destination || !app_state.selection_has_mask || app_state.selection_mask.empty()) return;
+
+    cairo_surface_flush(destination);
+    unsigned char* dst_data = cairo_image_surface_get_data(destination);
+    int dst_stride = cairo_image_surface_get_stride(destination);
+
+    for (int y = 0; y < bounds.height; y++) {
+        int target_y = bounds.y + y;
+        if (target_y < 0 || target_y >= app_state.canvas_height) continue;
+        guint32* dst_row = reinterpret_cast<guint32*>(dst_data + target_y * dst_stride);
+
+        for (int x = 0; x < bounds.width; x++) {
+            int target_x = bounds.x + x;
+            if (target_x < 0 || target_x >= app_state.canvas_width) continue;
+            if (!selection_mask_selected_at(target_x, target_y)) continue;
+            dst_row[target_x] = fill_pixel;
+        }
+    }
+
+    cairo_surface_mark_dirty(destination);
+}
+
+double clamp_color_channel(double channel) {
+    return fmax(0.0, fmin(1.0, channel));
+}
+
+guint32 rgba_to_pixel(const GdkRGBA& color) {
+    guint8 r = static_cast<guint8>(std::round(clamp_color_channel(color.red) * 255.0));
+    guint8 g = static_cast<guint8>(std::round(clamp_color_channel(color.green) * 255.0));
+    guint8 b = static_cast<guint8>(std::round(clamp_color_channel(color.blue) * 255.0));
+    guint8 a = static_cast<guint8>(std::round(clamp_color_channel(color.alpha) * 255.0));
+    return (static_cast<guint32>(a) << 24) |
+           (static_cast<guint32>(r) << 16) |
+           (static_cast<guint32>(g) << 8) |
+            static_cast<guint32>(b);
+}
+
 void start_selection_drag() {
     if (!app_state.has_selection || !app_state.surface) return;
 
@@ -877,7 +970,14 @@ void start_selection_drag() {
     cairo_t* float_cr = cairo_create(app_state.floating_surface);
     configure_crisp_rendering(float_cr);
 
-    if (app_state.selection_is_rect) {
+    cairo_set_operator(float_cr, CAIRO_OPERATOR_SOURCE);
+    cairo_set_source_rgba(float_cr, 0, 0, 0, 0);
+    cairo_paint(float_cr);
+    cairo_set_operator(float_cr, CAIRO_OPERATOR_OVER);
+
+    if (app_state.selection_has_mask && !app_state.selection_mask.empty()) {
+        copy_selection_masked_pixels(app_state.floating_surface, 0, 0, app_state.surface, bounds);
+    } else if (app_state.selection_is_rect) {
         cairo_set_source_surface(float_cr, app_state.surface, -bounds.x, -bounds.y);
         cairo_paint(float_cr);
     } else if (app_state.selection_path.size() > 2) {
@@ -899,12 +999,16 @@ void start_selection_drag() {
         app_state.bg_color.blue,
         app_state.bg_color.alpha
     );
-    if (app_state.selection_is_rect) {
+
+    if (app_state.selection_has_mask && !app_state.selection_mask.empty()) {
+        clear_selection_masked_pixels(app_state.surface, bounds, rgba_to_pixel(app_state.bg_color));
+    } else if (app_state.selection_is_rect) {
         cairo_rectangle(cr, bounds.x, bounds.y, w, h);
+        cairo_fill(cr);
     } else if (app_state.selection_path.size() > 2) {
         append_selection_path(cr);
+        cairo_fill(cr);
     }
-    cairo_fill(cr);
     cairo_destroy(cr);
 
     app_state.selection_x1 = bounds.x;
@@ -945,6 +1049,8 @@ void copy_selection() {
     if (app_state.floating_selection_active && app_state.floating_surface) {
         cairo_set_source_surface(cr, app_state.floating_surface, 0, 0);
         cairo_paint(cr);
+    } else if (app_state.selection_has_mask && !app_state.selection_mask.empty()) {
+        copy_selection_masked_pixels(app_state.clipboard_surface, 0, 0, app_state.surface, bounds);
     } else if (app_state.selection_is_rect) {
         cairo_set_source_surface(cr, app_state.surface, -bounds.x, -bounds.y);
         cairo_paint(cr);
@@ -982,16 +1088,28 @@ void cut_selection() {
         app_state.bg_color.alpha
     );
 
-    if (app_state.selection_is_rect) {
+    bool did_clear = false;
+
+    if (app_state.selection_has_mask && !app_state.selection_mask.empty()) {
+        SelectionPixelBounds bounds = get_selection_pixel_bounds();
+
+        push_undo_state();
+
+        clear_selection_masked_pixels(app_state.surface, bounds, rgba_to_pixel(app_state.bg_color));
+        did_clear = true;
+    }
+
+    if (!did_clear && app_state.selection_is_rect) {
         SelectionPixelBounds bounds = get_selection_pixel_bounds();
 
         push_undo_state();
 
         cairo_rectangle(cr, bounds.x, bounds.y, bounds.width, bounds.height);
-    } else if (app_state.selection_path.size() > 2) {
+        cairo_fill(cr);
+    } else if (!did_clear && app_state.selection_path.size() > 2) {
         append_selection_path(cr);
+        cairo_fill(cr);
     }
-    cairo_fill(cr);
     cairo_destroy(cr);
 
     if (app_state.drawing_area) {
@@ -1829,25 +1947,6 @@ GdkRGBA get_active_color() {
 
 bool is_transparent_color(const GdkRGBA& color) {
     return color.alpha <= 0.001;
-}
-
-bool point_in_canvas(int x, int y) {
-    return x >= 0 && x < app_state.canvas_width && y >= 0 && y < app_state.canvas_height;
-}
-
-double clamp_color_channel(double channel) {
-    return fmax(0.0, fmin(1.0, channel));
-}
-
-guint32 rgba_to_pixel(const GdkRGBA& color) {
-    guint8 r = static_cast<guint8>(std::round(clamp_color_channel(color.red) * 255.0));
-    guint8 g = static_cast<guint8>(std::round(clamp_color_channel(color.green) * 255.0));
-    guint8 b = static_cast<guint8>(std::round(clamp_color_channel(color.blue) * 255.0));
-    guint8 a = static_cast<guint8>(std::round(clamp_color_channel(color.alpha) * 255.0));
-    return (static_cast<guint32>(a) << 24) |
-           (static_cast<guint32>(r) << 16) |
-           (static_cast<guint32>(g) << 8) |
-            static_cast<guint32>(b);
 }
 
 GdkRGBA pixel_to_rgba(guint32 pixel) {
@@ -5927,7 +6026,7 @@ const char* get_tool_icon_filename(Tool tool) {
     switch (tool) {
         case TOOL_LASSO_SELECT: return "stock-tool-free-select.png";
         case TOOL_RECT_SELECT: return "stock-tool-rect-select.png";
-        case TOOL_SELECT_BY_COLOR: return "stock-tool-by-color-select.png";
+        case TOOL_SELECT_BY_COLOR: return "stock-tool-color-select.png";
         case TOOL_FUZZY_SELECT: return "stock-tool-fuzzy-select.png";
         case TOOL_ERASER: return "stock-tool-eraser.png";
         case TOOL_FILL: return "stock-tool-bucket-fill.png";
