@@ -489,6 +489,10 @@ void reset_zoom_to_default() {
     }
 }
 
+bool point_in_canvas(int x, int y) {
+    return x >= 0 && x < app_state.canvas_width && y >= 0 && y < app_state.canvas_height;
+}
+
 // Check if point is inside selection
 bool point_in_selection(double x, double y) {
     if (!app_state.has_selection) return false;
@@ -927,6 +931,21 @@ void clear_selection_masked_pixels(cairo_surface_t* destination, const Selection
     }
 
     cairo_surface_mark_dirty(destination);
+}
+
+double clamp_color_channel(double channel) {
+    return fmax(0.0, fmin(1.0, channel));
+}
+
+guint32 rgba_to_pixel(const GdkRGBA& color) {
+    guint8 r = static_cast<guint8>(std::round(clamp_color_channel(color.red) * 255.0));
+    guint8 g = static_cast<guint8>(std::round(clamp_color_channel(color.green) * 255.0));
+    guint8 b = static_cast<guint8>(std::round(clamp_color_channel(color.blue) * 255.0));
+    guint8 a = static_cast<guint8>(std::round(clamp_color_channel(color.alpha) * 255.0));
+    return (static_cast<guint32>(a) << 24) |
+           (static_cast<guint32>(r) << 16) |
+           (static_cast<guint32>(g) << 8) |
+            static_cast<guint32>(b);
 }
 
 void start_selection_drag() {
@@ -1925,25 +1944,6 @@ GdkRGBA get_active_color() {
 
 bool is_transparent_color(const GdkRGBA& color) {
     return color.alpha <= 0.001;
-}
-
-bool point_in_canvas(int x, int y) {
-    return x >= 0 && x < app_state.canvas_width && y >= 0 && y < app_state.canvas_height;
-}
-
-double clamp_color_channel(double channel) {
-    return fmax(0.0, fmin(1.0, channel));
-}
-
-guint32 rgba_to_pixel(const GdkRGBA& color) {
-    guint8 r = static_cast<guint8>(std::round(clamp_color_channel(color.red) * 255.0));
-    guint8 g = static_cast<guint8>(std::round(clamp_color_channel(color.green) * 255.0));
-    guint8 b = static_cast<guint8>(std::round(clamp_color_channel(color.blue) * 255.0));
-    guint8 a = static_cast<guint8>(std::round(clamp_color_channel(color.alpha) * 255.0));
-    return (static_cast<guint32>(a) << 24) |
-           (static_cast<guint32>(r) << 16) |
-           (static_cast<guint32>(g) << 8) |
-            static_cast<guint32>(b);
 }
 
 GdkRGBA pixel_to_rgba(guint32 pixel) {
@@ -5941,7 +5941,7 @@ const char* get_tool_icon_filename(Tool tool) {
     switch (tool) {
         case TOOL_LASSO_SELECT: return "stock-tool-free-select.png";
         case TOOL_RECT_SELECT: return "stock-tool-rect-select.png";
-        case TOOL_SELECT_BY_COLOR: return "stock-tool-by-color-select.png";
+        case TOOL_SELECT_BY_COLOR: return "stock-tool-color-select.png";
         case TOOL_FUZZY_SELECT: return "stock-tool-fuzzy-select.png";
         case TOOL_ERASER: return "stock-tool-eraser.png";
         case TOOL_FILL: return "stock-tool-bucket-fill.png";
