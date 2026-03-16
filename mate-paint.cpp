@@ -46,6 +46,7 @@ enum Tool {
     TOOL_CURVE,
     TOOL_RECTANGLE,
     TOOL_POLYGON,
+    TOOL_CROP,
     TOOL_ELLIPSE,
     TOOL_REGULAR_POLYGON,
     TOOL_STAR,
@@ -99,6 +100,7 @@ bool ask_star_points(GtkWidget* parent);
 void build_regular_polygon_points(double start_x, double start_y, double end_x, double end_y, bool from_center, bool uniform, int sides, std::vector<std::pair<double, double>>& points);
 void build_star_points(double start_x, double start_y, double end_x, double end_y, bool from_center, bool uniform, int points_count, std::vector<std::pair<double, double>>& points);
 void draw_regular_polygon(cairo_t* cr, const std::vector<std::pair<double, double>>& points);
+void crop_to_rectangle(double x1, double y1, double x2, double y2);
 
 struct UndoSnapshot {
     cairo_surface_t* surface = nullptr;
@@ -369,14 +371,15 @@ void save_custom_palette_colors() {
 bool tool_needs_preview(Tool tool) {
     return tool == TOOL_LASSO_SELECT || tool == TOOL_RECT_SELECT ||
            tool == TOOL_LINE || tool == TOOL_CURVE ||
-           tool == TOOL_RECTANGLE || tool == TOOL_POLYGON ||
+           tool == TOOL_RECTANGLE || tool == TOOL_POLYGON || tool == TOOL_CROP ||
            tool == TOOL_ELLIPSE || tool == TOOL_REGULAR_POLYGON || tool == TOOL_STAR ||
            tool == TOOL_ROUNDED_RECT || tool == TOOL_GRADIENT_FILL;
 }
 
 bool tool_is_selection_tool(Tool tool) {
     return tool == TOOL_LASSO_SELECT || tool == TOOL_RECT_SELECT ||
-           tool == TOOL_SELECT_BY_COLOR || tool == TOOL_FUZZY_SELECT;
+           tool == TOOL_SELECT_BY_COLOR || tool == TOOL_FUZZY_SELECT ||
+           tool == TOOL_CROP;
 }
 
 int tool_to_index(Tool tool) {
@@ -2472,7 +2475,8 @@ void draw_preview(cairo_t* cr) {
             constrain_to_circle(app_state.start_x, app_state.start_y, preview_x, preview_y);
         } else if (app_state.current_tool == TOOL_RECTANGLE ||
                    app_state.current_tool == TOOL_ROUNDED_RECT ||
-                   app_state.current_tool == TOOL_RECT_SELECT) {
+                   app_state.current_tool == TOOL_RECT_SELECT ||
+                   app_state.current_tool == TOOL_CROP) {
             constrain_to_square(app_state.start_x, app_state.start_y, preview_x, preview_y);
         }
     }
@@ -2509,7 +2513,8 @@ void draw_preview(cairo_t* cr) {
             break;
         }
 
-        case TOOL_RECT_SELECT: {
+        case TOOL_RECT_SELECT:
+        case TOOL_CROP: {
             double x = fmin(app_state.start_x, preview_x);
             double y = fmin(app_state.start_y, preview_y);
             double w = fabs(preview_x - app_state.start_x);
@@ -2970,7 +2975,26 @@ gboolean on_button_press(GtkWidget* widget, GdkEventButton* event, gpointer data
             return TRUE;
         }
 
+        if (app_state.current_tool == TOOL_CROP && app_state.has_selection) {
+            if (point_in_selection(canvas_x, canvas_y)) {
+                if (event->button == 1) {
+                    crop_to_rectangle(
+                        app_state.selection_x1,
+                        app_state.selection_y1,
+                        app_state.selection_x2,
+                        app_state.selection_y2
+                    );
+                }
+                return TRUE;
+            }
+
+            clear_selection();
+            gtk_widget_queue_draw(widget);
+            return TRUE;
+        }
+
         if (tool_is_selection_tool(app_state.current_tool) &&
+            app_state.current_tool != TOOL_CROP &&
             app_state.has_selection && point_in_selection(canvas_x, canvas_y)) {
             start_selection_drag();
             if (app_state.floating_selection_active) {
@@ -3421,7 +3445,8 @@ gboolean on_button_release(GtkWidget* widget, GdkEventButton* event, gpointer da
                 constrain_to_circle(app_state.start_x, app_state.start_y, end_x, end_y);
             } else if (app_state.current_tool == TOOL_RECTANGLE ||
                        app_state.current_tool == TOOL_ROUNDED_RECT ||
-                       app_state.current_tool == TOOL_RECT_SELECT) {
+                       app_state.current_tool == TOOL_RECT_SELECT ||
+                       app_state.current_tool == TOOL_CROP) {
                 constrain_to_square(app_state.start_x, app_state.start_y, end_x, end_y);
             }
         }
@@ -3478,6 +3503,7 @@ gboolean on_button_release(GtkWidget* widget, GdkEventButton* event, gpointer da
                 stop_ant_animation();
                 break;
             case TOOL_RECT_SELECT:
+            case TOOL_CROP:
                 app_state.has_selection = true;
                 app_state.selection_is_rect = true;
                 app_state.floating_selection_active = false;
@@ -5412,6 +5438,65 @@ void on_image_flip_vertical(GtkMenuItem* item, gpointer data) {
     gtk_widget_queue_draw(app_state.drawing_area);
 }
 
+void crop_to_rectangle(double x1, double y1, double x2, double y2) {
+    if (!app_state.surface) return;
+
+    int left = static_cast<int>(std::floor(fmin(x1, x2)));
+    int top = static_cast<int>(std::floor(fmin(y1, y2)));
+    int right = static_cast<int>(std::ceil(fmax(x1, x2)));
+    int bottom = static_cast<int>(std::ceil(fmax(y1, y2)));
+
+    left = std::max(0, std::min(left, app_state.canvas_width));
+    top = std::max(0, std::min(top, app_state.canvas_height));
+    right = std::max(0, std::min(right, app_state.canvas_width));
+    bottom = std::max(0, std::min(bottom, app_state.canvas_height));
+
+    int new_width = right - left;
+    int new_height = bottom - top;
+    if (new_width <= 0 || new_height <= 0) {
+        clear_selection();
+        return;
+    }
+
+    push_undo_state();
+
+    cairo_surface_t* old_surface = app_state.surface;
+    cairo_surface_t* cropped_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, new_width, new_height);
+
+    cairo_t* cr = cairo_create(cropped_surface);
+    configure_crisp_rendering(cr);
+    cairo_set_source_rgba(
+        cr,
+        app_state.bg_color.red,
+        app_state.bg_color.green,
+        app_state.bg_color.blue,
+        app_state.bg_color.alpha
+    );
+    cairo_paint(cr);
+    cairo_set_source_surface(cr, old_surface, -left, -top);
+    cairo_paint(cr);
+    cairo_destroy(cr);
+
+    app_state.surface = cropped_surface;
+    if (!app_state.layers.empty()) app_state.layers[app_state.active_layer_index].surface = app_state.surface;
+    app_state.canvas_width = new_width;
+    app_state.canvas_height = new_height;
+    cairo_surface_destroy(old_surface);
+
+    clear_selection();
+    if (app_state.text_active) {
+        cancel_text();
+    }
+
+    update_canvas_dimensions_label();
+    gtk_widget_set_size_request(
+        app_state.drawing_area,
+        static_cast<int>(app_state.canvas_width * app_state.zoom_factor),
+        static_cast<int>(app_state.canvas_height * app_state.zoom_factor)
+    );
+    gtk_widget_queue_draw(app_state.drawing_area);
+}
+
 void on_help_manual(GtkMenuItem* item, gpointer data) {
     // Use help URI instead of filesystem path
     const char* uri = "help:mate-paint-pro/contents";
@@ -5858,6 +5943,7 @@ const char* get_tool_icon_filename(Tool tool) {
         case TOOL_CURVE: return "stock_draw-curve.png";
         case TOOL_RECTANGLE: return "stock_draw-rectangle.png";
         case TOOL_POLYGON: return "stock_draw-fill_polygon.png";
+        case TOOL_CROP: return "stock-tool-rect-select.png";
         case TOOL_ELLIPSE: return "stock_draw-ellipse.png";
         case TOOL_REGULAR_POLYGON: return "stock_draw-pentagon.png";
         case TOOL_STAR: return "stock_draw-star.png";
@@ -6208,6 +6294,11 @@ int main(int argc, char* argv[]) {
         create_tool_button(TOOL_POLYGON, 
             _("Polygon - Draw multi-sided shapes")), 
         1, 8, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(toolbox),
+        create_tool_button(TOOL_CROP,
+            _("Crop - Draw a crop rectangle (hold Shift for square, click inside to crop, outside to deselect)")),
+        1, 9, 1, 1);
     
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ELLIPSE, 
@@ -6217,17 +6308,17 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_ROUNDED_RECT,
             _("Rounded Rectangle - Draw rectangles with rounded corners")),
-        1, 9, 1, 1);
+        1, 10, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_REGULAR_POLYGON,
             _("Polygon Button - Draw regular polygons (asks for 3-50 sides, hold Ctrl for center, Shift for uniform)")),
-        0, 10, 1, 1);
+        0, 11, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_STAR,
             _("Star - Draw stars (asks for 3-50 points, hold Ctrl for center, Shift for uniform)")),
-        1, 10, 1, 1);
+        1, 11, 1, 1);
     
     gtk_box_pack_start(GTK_BOX(tool_column), toolbox, FALSE, FALSE, 0);
 
