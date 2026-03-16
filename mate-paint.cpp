@@ -5943,7 +5943,7 @@ const char* get_tool_icon_filename(Tool tool) {
         case TOOL_CURVE: return "stock_draw-curve.png";
         case TOOL_RECTANGLE: return "stock_draw-rectangle.png";
         case TOOL_POLYGON: return "stock_draw-fill_polygon.png";
-        case TOOL_CROP: return "stock-tool-rect-select.png";
+        case TOOL_CROP: return "stock-tool-crop.png";
         case TOOL_ELLIPSE: return "stock_draw-ellipse.png";
         case TOOL_REGULAR_POLYGON: return "stock_draw-pentagon.png";
         case TOOL_STAR: return "stock_draw-star.png";
@@ -6295,11 +6295,6 @@ int main(int argc, char* argv[]) {
             _("Polygon - Draw multi-sided shapes")), 
         1, 8, 1, 1);
 
-    gtk_grid_attach(GTK_GRID(toolbox),
-        create_tool_button(TOOL_CROP,
-            _("Crop - Draw a crop rectangle (hold Shift for square, click inside to crop, outside to deselect)")),
-        1, 9, 1, 1);
-    
     gtk_grid_attach(GTK_GRID(toolbox), 
         create_tool_button(TOOL_ELLIPSE, 
             _("Ellipse/Circle - Draw ellipses (hold Shift for circles)")), 
@@ -6308,18 +6303,22 @@ int main(int argc, char* argv[]) {
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_ROUNDED_RECT,
             _("Rounded Rectangle - Draw rectangles with rounded corners")),
-        1, 10, 1, 1);
+        1, 9, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_REGULAR_POLYGON,
             _("Polygon Button - Draw regular polygons (asks for 3-50 sides, hold Ctrl for center, Shift for uniform)")),
-        0, 11, 1, 1);
+        0, 10, 1, 1);
 
     gtk_grid_attach(GTK_GRID(toolbox),
         create_tool_button(TOOL_STAR,
             _("Star - Draw stars (asks for 3-50 points, hold Ctrl for center, Shift for uniform)")),
-        1, 11, 1, 1);
-    
+        1, 10, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(toolbox),
+        create_tool_button(TOOL_CROP,
+            _("Crop - Draw a crop rectangle (hold Shift for square, click inside to crop, outside to deselect)")),
+        1, 11, 1, 1);    
     gtk_box_pack_start(GTK_BOX(tool_column), toolbox, FALSE, FALSE, 0);
 
     app_state.line_thickness_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
