@@ -4326,11 +4326,9 @@ void apply_brightness_contrast_from_original(BrightnessContrastWindowState* stat
         state->undo_pushed = true;
     }
 
-    const double brightness = gtk_range_get_value(GTK_RANGE(state->brightness_scale));
+    const double brightness_offset = gtk_range_get_value(GTK_RANGE(state->brightness_scale));
     const double contrast = gtk_range_get_value(GTK_RANGE(state->contrast_scale));
-    const double brightness_offset = (brightness / 100.0) * 255.0;
-    const double contrast_255 = contrast * 2.55;
-    const double contrast_factor = (259.0 * (contrast_255 + 255.0)) / (255.0 * (259.0 - contrast_255));
+    const double contrast_factor = (259.0 * (contrast + 255.0)) / (255.0 * (259.0 - contrast));
 
     cairo_surface_flush(state->original_surface);
     cairo_surface_flush(target_surface);
@@ -4490,7 +4488,7 @@ void on_layer_brightness_contrast(GtkMenuItem* item, gpointer data) {
         GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         GtkWidget* label = gtk_label_new(label_text);
         gtk_widget_set_halign(label, GTK_ALIGN_START);
-        GtkWidget* scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -100.0, 100.0, 1.0);
+        GtkWidget* scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -127.0, 127.0, 1.0);
         gtk_scale_set_draw_value(GTK_SCALE(scale), TRUE);
         gtk_range_set_value(GTK_RANGE(scale), 0.0);
         gtk_widget_set_hexpand(scale, TRUE);
