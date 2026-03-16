@@ -1526,6 +1526,19 @@ void add_new_layer() {
     }
 }
 
+cairo_surface_t* clone_surface(cairo_surface_t* source, int width, int height) {
+    if (!source || width <= 0 || height <= 0) {
+        return nullptr;
+    }
+
+    cairo_surface_t* copy = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+    cairo_t* cr = cairo_create(copy);
+    cairo_set_source_surface(cr, source, 0, 0);
+    cairo_paint(cr);
+    cairo_destroy(cr);
+    return copy;
+}
+
 void duplicate_active_layer() {
     if (app_state.active_layer_index < 0 || app_state.active_layer_index >= (int)app_state.layers.size()) {
         return;
@@ -1682,19 +1695,6 @@ void rebuild_layer_panel() {
     }
     gtk_widget_show_all(app_state.layer_list_box);
     sync_layer_controls();
-}
-
-cairo_surface_t* clone_surface(cairo_surface_t* source, int width, int height) {
-    if (!source || width <= 0 || height <= 0) {
-        return nullptr;
-    }
-
-    cairo_surface_t* copy = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
-    cairo_t* cr = cairo_create(copy);
-    cairo_set_source_surface(cr, source, 0, 0);
-    cairo_paint(cr);
-    cairo_destroy(cr);
-    return copy;
 }
 
 void push_undo_state() {
