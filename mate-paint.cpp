@@ -88,6 +88,7 @@ void save_custom_palette_colors();
 void rebuild_layer_panel();
 void set_active_layer(int index);
 void add_new_layer();
+void duplicate_active_layer();
 void delete_layer(int index);
 void move_layer_up(int index);
 void move_layer_down(int index);
@@ -213,6 +214,7 @@ struct AppState {
     GtkWidget* layer_list_box = nullptr;
     GtkWidget* layer_panel = nullptr;
     GtkWidget* add_layer_button = nullptr;
+    GtkWidget* duplicate_layer_button = nullptr;
     GtkWidget* merge_layer_button = nullptr;
     GtkWidget* layer_move_up_button = nullptr;
     GtkWidget* layer_move_down_button = nullptr;
@@ -1519,6 +1521,29 @@ void add_new_layer() {
     layer.surface = create_blank_surface(app_state.canvas_width, app_state.canvas_height, false);
     app_state.layers.push_back(layer);
     set_active_layer((int)app_state.layers.size() - 1);
+    if (app_state.drawing_area) {
+        gtk_widget_queue_draw(app_state.drawing_area);
+    }
+}
+
+void duplicate_active_layer() {
+    if (app_state.active_layer_index < 0 || app_state.active_layer_index >= (int)app_state.layers.size()) {
+        return;
+    }
+
+    Layer& source_layer = app_state.layers[app_state.active_layer_index];
+    Layer duplicated_layer;
+    duplicated_layer.name = source_layer.name + " Copy";
+    duplicated_layer.visible = source_layer.visible;
+    duplicated_layer.opacity = source_layer.opacity;
+    duplicated_layer.surface = clone_surface(source_layer.surface, app_state.canvas_width, app_state.canvas_height);
+
+    if (!duplicated_layer.surface) {
+        return;
+    }
+
+    app_state.layers.insert(app_state.layers.begin() + app_state.active_layer_index + 1, duplicated_layer);
+    set_active_layer(app_state.active_layer_index + 1);
     if (app_state.drawing_area) {
         gtk_widget_queue_draw(app_state.drawing_area);
     }
@@ -6297,12 +6322,17 @@ int main(int argc, char* argv[]) {
     g_signal_connect(app_state.add_layer_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
         add_new_layer();
     }), NULL);
+    app_state.duplicate_layer_button = gtk_button_new_with_label(_("Duplicate Layer"));
+    g_signal_connect(app_state.duplicate_layer_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
+        duplicate_active_layer();
+    }), NULL);
     app_state.merge_layer_button = gtk_button_new_with_label(_("Merge Down"));
     gtk_widget_set_tooltip_text(app_state.merge_layer_button, _("Merge the selected layer into the layer below"));
     g_signal_connect(app_state.merge_layer_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer data) {
         merge_layer_down(app_state.active_layer_index);
     }), NULL);
     gtk_box_pack_start(GTK_BOX(layer_action_row), app_state.add_layer_button, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(layer_action_row), app_state.duplicate_layer_button, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(layer_action_row), app_state.merge_layer_button, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(app_state.layer_panel), layer_action_row, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(content_box), app_state.layer_panel, FALSE, FALSE, 0);
