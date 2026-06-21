@@ -1,1 +1,15 @@
-mate-paint.cpp
+src/main.cpp
+src/utils.cpp
+src/selection.cpp
+src/drawing.cpp
+src/rendering.cpp
+src/events.cpp
+src/layers.cpp
+src/undo.cpp
+src/filters.cpp
+src/file_io.cpp
+src/image_ops.cpp
+src/text_tool.cpp
+src/palette.cpp
+src/ui_widgets.cpp
+src/menus.cpp
